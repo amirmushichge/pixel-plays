@@ -2,6 +2,8 @@
 
 Small browser games shown as isometric pixel dioramas. Every game is one page of plain JavaScript with its own software rasteriser: no build step, no dependencies, no sprites or image assets.
 
+**Play: https://pixel-plays-ruby.vercel.app/**
+
 Concept by [abhi](https://x.com/awwbhi2). Game by [AmirMushich](https://x.com/AmirMushich). Visual reference for the style: shawn.'s [Small plays](https://x.com/zzzzshawn/status/2111546123546661289); no assets or subjects were copied.
 
 ## Games
