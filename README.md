@@ -25,11 +25,35 @@ node serve.mjs
 Then open http://127.0.0.1:5300/. Any static file server works, and the site deploys as plain static files.
 
 ## Add a game
-Create `<id>/index.html`, load `../shell.js`, call `PixelPlays.mount({ id, rules })`, set `window.PP_SCENE`, load `../engine.js`, then add the game to `GAMES` in `shell.js`. The page needs a `#mute` button. Put its background track at `<id>/<id>.mp3`.
+Create `<id>/index.html`, load `../shell.js`, call `PixelPlays.mount({ id, rules })`, set `window.PP_SCENE`, load `../engine.js`, then add the game to `GAMES` in `shell.js`. The page needs a `#mute` button. Put its background track at `<id>/<id>.mp3`. If a game has no track, it can pass a synth song. See [Synth music](#synth-music).
 
 - `shell.js` provides the game menu, the Rules popup, the credits and the background music.
 - `engine.js` provides the camera, depth buffer, colour ramps, shadows, edges, figures, trees and wind as globals.
 - A game supplies its own `groundColor`, `bake`, `update` and `draw`.
+
+## Synth music
+A game can carry its own music as code. Pass a `song` to `PixelPlays.mount`. The shell then plays the song. It does not load an mp3.
+
+```js
+PixelPlays.mount({
+  id: 'my-game',
+  rules: ['...'],
+  song: {
+    bpm: 96, meter: 4, bars: 2,
+    parts: [
+      { instrument: 'whistle', gain: .2, notes: PixelPlays.melody(['r:2 D5 E5', 'F5:3 r']) },
+      { instrument: 'bass', gain: .18, notes: [[0, 2, 38], [2, 2, 45], [4, 2, 38], [6, 2, 45]] },
+    ],
+  },
+});
+```
+
+- Each note is `[beat, beats, midi, velocity]`. Beats count from the start of the song. Velocity is optional.
+- `PixelPlays.melody()` turns one string per bar into notes. Write a note such as `A4` or `C#5`, or `r` for a rest. Add `:beats` for a length other than one beat. The function throws an error if a bar has the wrong length.
+- The instruments are `whistle`, `twang`, `bass` and `block`. The whistle and the twang also feed a short echo.
+- `volume` and `echo` are optional. `echo` is the delay in seconds.
+- The song starts on the first tap or key press. It loops until the player leaves the page. The sound button mutes it. It pauses when the tab is hidden.
+- `PixelPlays.setMusicLevel(level, seconds)` fades the song. Use it to silence the music under a sound cue.
 
 ## Visual rules
 - One small place floating on pure white, with no UI chrome around it.
