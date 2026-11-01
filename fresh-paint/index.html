@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Fresh Paint</title>
+<style>
+  :root { --ink: #1c1b19; --muted: #8b877f; --paper: #fff; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--paper); color: var(--ink); }
+  body { font: 13px/1.35 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  canvas { display: block; image-rendering: pixelated; touch-action: none; cursor: crosshair; outline: none; }
+  .hud { position: fixed; left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right)); display: flex; justify-content: space-between; gap: 16px; pointer-events: none; }
+  #scores { position: fixed; top: max(14px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); display: grid; gap: 2px; pointer-events: none; }
+  #scores b { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #clock { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .dots { display: flex; gap: 3px; margin-top: 2px; }
+  .dots i { width: 6px; height: 6px; background: #e0b52c; }
+  .dots i.off { background: var(--ink); opacity: .16; }
+  #bottom { bottom: max(14px, env(safe-area-inset-bottom)); align-items: flex-end; }
+  #status { color: var(--muted); }
+  #mute { pointer-events: auto; white-space: nowrap; font: inherit; color: var(--muted); background: none; border: 0; padding: 10px; margin: -10px; cursor: pointer; }
+  #mute:hover, #mute:focus-visible { color: var(--ink); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" tabindex="0" aria-label="Fresh Paint. Move the pointer and the painter walks after it. Hold to press the roller down: on the pavement it paints, in the tray it reloads. Arrow keys and space work too."></canvas></div>
+<div id="scores">
+  <b id="cover">0%</b>
+  <span id="clock">2:00</span>
+  <span class="dots" id="load" aria-label="paint on the roller"></span>
+</div>
+<div class="hud" id="bottom">
+  <div id="status" role="status" aria-live="polite"></div>
+  <button id="mute" type="button" aria-pressed="false">sound on</button>
+</div>
+<script src="../shell.js"></script>
+<script>
+PixelPlays.mount({
+  id: 'fresh-paint',
+  rules: [
+    'Repaint every faded marking in the lot before the two-minute shift ends.',
+    'The painter walks after your pointer. Hold to press the roller down and paint.',
+    'The roller runs dry. Hold it down in the paint tray to load it again. A low roller leaves patchy stripes.',
+    'Push the roller straight ahead for a full stripe. Paint outside the markings counts against you, and finishing early earns a bonus.',
+  ],
+});
+</script>
+<script>window.PP_SCENE = { originY: 14 };</script>
+<script src="../engine.js"></script>
+<script>
+'use strict';
+/* ---------- layout ---------- */
+const LOT = { x0: -10.5, x1: 10.5, y0: -8, y1: 8 };
+const CURB = .45, CELL = .1;
+const GW = Math.round((LOT.x1 - LOT.x0) / CELL), GH = Math.round((LOT.y1 - LOT.y0) / CELL);
+const TRAY = { x0: 8.1, x1: 9.7, y0: -7.4, y1: -6 };
+const SHIFT = 120, DONE_AT = .97;
+const REACH = 1.75, HALF_ROLL = .3, HALF_DEPTH = .13, ROLL_R = .13;
+const WALK_SPEED = 3.4, ROLL_SPEED = 2.5, CAPACITY = 900, REFILL = 1.1;
+const WORKER_SCALE = .85;
+const WORKER = { shirt: [238, 112, 38], stripe: [246, 226, 120], legs: [52, 58, 82], hair: [58, 44, 34], skin: [206, 150, 112] };
+const HANDLE = [196, 190, 176], YOKE = [120, 124, 132];
+const ASPHALT = [[56, 58, 68], [61, 63, 72], [66, 68, 77], [71, 73, 81]];
+const CONCRETE = [[164, 160, 152], [178, 174, 166], [192, 188, 180]];
+const FADED = [[112, 106, 82], [128, 120, 88], [142, 132, 94]];
+const PAINT = [[232, 188, 46], [242, 200, 60], [250, 212, 82]];
+const KIND_ASPHALT = 1, KIND_CURB = 2;
+
+// every marking is a stroke with a width; bay lines and bars have flat ends, the arrow has round joints
+const MARKS = [];
+const mark = (ax, ay, bx, by, w, round = false) => MARKS.push({ ax, ay, bx, by, w, round });
+for (const x of [-9.5, -7, -4.5, -2, .5]) { mark(x, -7.7, x, -4.2, .4); mark(x, 4.2, x, 7.7, .4); }
+mark(-8.2, 0, -3, 0, .45, true); mark(-3, 0, -4.3, -1.2, .45, true); mark(-3, 0, -4.3, 1.2, .45, true);
+for (const y of [-2.8, -1.4, 0, 1.4, 2.8]) mark(2.2, y, 5.2, y, .7);
+mark(7.4, -3.4, 7.4, 3.4, .55);
+function inMark(x, y, grow = 0) {
+  for (const m of MARKS) {
+    const dx = m.bx - m.ax, dy = m.by - m.ay, len = Math.hypot(dx, dy);
+    const t = ((x - m.ax) * dx + (y - m.ay) * dy) / (len * len), half = m.w / 2 + grow;
+    if (m.round) {
+      const c = clamp(t, 0, 1);
+      if (Math.hypot(m.ax + dx * c - x, m.ay + dy * c - y) <= half) return true;
+    } else {
+      const ext = grow / len;
+      if (t < -ext || t > 1 + ext) continue;
+      if (Math.abs((x - m.ax) * dy - (y - m.ay) * dx) / len <= half) return true;
+    }
+  }
+  return false;
+}
+const inLot = (x, y) => x > LOT.x0 && x < LOT.x1 && y > LOT.y0 && y < LOT.y1;
+const inTray = (x, y, pad = 0) => x > TRAY.x0 - pad && x < TRAY.x1 + pad && y > TRAY.y0 - pad && y < TRAY.y1 + pad;
+const cellX = gx => LOT.x0 + (gx + .5) * CELL, cellY = gy => LOT.y0 + (gy + .5) * CELL;
+
+// the paint grid: what the markings need, a tolerance band around them, and what has been painted
+const target = new Uint8Array(GW * GH), near = new Uint8Array(GW * GH), paint = new Uint8Array(GW * GH);
+let targetTotal = 0;
+for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
+  const x = cellX(gx), y = cellY(gy), c = gy * GW + gx;
+  if (inMark(x, y)) { target[c] = 1; targetTotal++; }
+  if (inMark(x, y, .22) || inTray(x, y, .2)) near[c] = 1;
+}
+
+/* ---------- ground ---------- */
+const pixCell = new Int32Array(W * H).fill(-1), pixTone = new Uint8Array(W * H);
+const lotPixels = [];
+const toneOf = (tones, v, ix, iy) => rgb(...tones[clamp(Math.floor(v * tones.length + (bayerAt(ix, iy) - .5) * .7), 0, tones.length - 1)]);
+function groundColor(x, y, ix, iy, i) {
+  const edge = Math.pow(Math.pow(Math.abs(x) / 14.4, 4) + Math.pow(Math.abs(y) / 11.4, 4), .25);
+  const rough = edge + (noise(x * 1.3, y * 1.3) - .5) * .13;
+  if (rough > 1.04) return 0;
+  if (rough > .93 && hash(ix, iy) < (rough - .93) / .11) return 0;
+  const fine = hash(ix, iy);
+  if (inLot(x, y)) {
+    kinds[i] = KIND_ASPHALT;
+    const gx = Math.floor((x - LOT.x0) / CELL), gy = Math.floor((y - LOT.y0) / CELL);
+    pixCell[i] = clamp(gy, 0, GH - 1) * GW + clamp(gx, 0, GW - 1);
+    pixTone[i] = clamp(Math.floor(noise(x * 3, y * 3) * 3 + (bayerAt(ix, iy) - .5) * .8), 0, 2);
+    lotPixels.push(i);
+    // worn paint: scuffed through in patches, so the markings read as a guide and not as finished lines
+    if (inMark(x, y) && noise(x * 2.4, y * 2.4) * .8 + fine * .45 > .5) return toneOf(FADED, noise(x * 4, y * 4), ix, iy);
+    const crack = Math.abs(noise(x * .55 + 7, y * .55 - 3) - .5);
+    if (crack < .014 && fine > .3) return rgb(40, 40, 50);
+    // oil drips in the middle of the bays, where cars sit
+    const bay = Math.abs(y) > 4.8 && Math.abs(y) < 7 && x < .5 && Math.abs(((x + 9.5) % 2.5 + 2.5) % 2.5 - 1.25) < .6;
+    const stain = bay && noise(x * 1.6, y * 1.6) > .55;
+    return toneOf(ASPHALT, noise(x * .5, y * .5) * .55 + fine * .35 - (stain ? .4 : 0), ix, iy);
+  }
+  if (x > LOT.x0 - CURB && x < LOT.x1 + CURB && y > LOT.y0 - CURB && y < LOT.y1 + CURB) {
+    kinds[i] = KIND_CURB;
+    return toneOf(CONCRETE, .3 + noise(x * 4, y * 4) * .5 + (fine - .5) * .3, ix, iy);
+  }
+  kinds[i] = KIND_GRASS;
+  const t = noise(x * .9, y * .9) * 1.15 + (fine - .5) * .55 - .08;
+  return rgb(...GRASS[clamp(Math.floor(t * 4.2), 0, 3)]);
+}
+function lamp(x, y) {
+  const POLE = [78, 82, 94];
+  capsule([x, y, 0], [x, y, 4.6], .1, .07, () => POLE);
+  capsule([x, y, 4.6], [x + .8, y + .3, 4.75], .06, .06, () => POLE);
+  box(x + .55, y + .1, 4.45, x + 1.15, y + .5, 4.7, [96, 100, 110], 70);
+  for (let z = .4; z <= 4.6; z += .4) castShadow(x, y, z, .14);
+}
+function cone(x, y) {
+  capsule([x, y, .02], [x, y, .75], .28, .05, z => (z > .3 && z < .45 ? [240, 238, 228] : [238, 104, 40]), 'solid');
+  box(x - .34, y - .34, 0, x + .34, y + .34, .05, [238, 104, 40], 80);
+  for (let z = .1; z <= .7; z += .2) castShadow(x, y, z, .28 - z * .3);
+}
+function trayAndBucket() {
+  box(TRAY.x0, TRAY.y0, 0, TRAY.x1, TRAY.y1, .14, [70, 72, 82], 90);
+  const ramp = rampOf(PAINT[1]);
+  for (let x = TRAY.x0 + .12; x <= TRAY.x1 - .12; x += .03) for (let y = TRAY.y0 + .12; y <= TRAY.y1 - .12; y += .03) {
+    const ridge = x > TRAY.x0 + (TRAY.x1 - TRAY.x0) * .55 && Math.floor(x * 9) % 2 === 0;
+    plot(x, y, .16, ramp[ridge ? 4 : hash(x * 40 | 0, y * 40 | 0) > .85 ? 4 : 3]);
+  }
+  const bx = 9.9, by = -4.9;
+  box(bx - .32, by - .32, 0, bx + .32, by + .32, .7, [222, 220, 212], 95);
+  for (let x = bx - .26; x <= bx + .26; x += .03) for (let y = by - .26; y <= by + .26; y += .03) plot(x, y, .72, ramp[3]);
+  for (let x = bx - .32; x <= bx + .32; x += .03) plot(x, by + .33, .5, ramp[3]); // label band
+  for (let z = .2; z <= .7; z += .25) castShadow(bx, by, z, .34);
+  for (let x = TRAY.x0; x <= TRAY.x1; x += .4) for (let y = TRAY.y0; y <= TRAY.y1; y += .4) castShadow(x, y, .1, .3);
+}
+function bake() {
+  zb.fill(-1e9);
+  pix.fill(rgb(255, 255, 255));
+  for (let iy = 0; iy < H; iy++) for (let ix = 0; ix < W; ix++) {
+    const g = unproject(ix + .5, iy + .5), i = iy * W + ix, c = groundColor(g.x, g.y, ix, iy, i);
+    if (!c) continue;
+    pix[i] = c; ground[i] = 1;
+    zb[i] = (g.x + g.y) / R2 * COS;
+  }
+  growGrass();
+  groundZ.set(zb);
+  trayAndBucket();
+  lamp(-11.3, -8.9);
+  lamp(11.2, 8.7);
+  cone(9.7, 5.2); cone(9.7, 6.4); cone(9.7, 7.6);
+  growTree(-12.6, 5.6, .72, 260, 300);
+  growTree(12.4, -6.4, .8, 300, 900);
+  growTree(-3, -10.2, .6, 200, 1500);
+  bakeOcclusion();
+  staticShadow.set(shadowMask);
+  applyShadows(groundZ);
+  bakedPix.set(pix);
+  bakedZ.set(zb);
+}
+
+/* ---------- game ---------- */
+const G = {
+  phase: 'ready', time: 0, left: SHIFT, load: 1, painted: 0, mess: 0, best: readBest(),
+  down: false, tx: 6.6, ty: -6.7, status: '', doneAt: 0, rolling: 0, filling: false,
+};
+const R = { x: 6.6, y: -6.7, vx: 0, vy: 0 };
+const B = { x: 6.6 - REACH, y: -6.7, yaw: 0, gait: 0 };
+const keys = new Set();
+const nodes = { cover: document.getElementById('cover'), clock: document.getElementById('clock'), load: document.getElementById('load'), status: document.getElementById('status') };
+
+function readBest() { try { return +localStorage.getItem('pixel-plays:fresh-paint:best') || 0; } catch { return 0; } }
+function saveBest(v) { try { localStorage.setItem('pixel-plays:fresh-paint:best', v); } catch { /* best score is a convenience */ } }
+function setStatus(text) {
+  if (text === G.status) return;
+  G.status = text;
+  nodes.status.textContent = text;
+}
+const coverage = () => G.painted / targetTotal;
+function renderHud() {
+  nodes.cover.textContent = Math.floor(coverage() * 100) + '%';
+  const s = Math.ceil(G.left);
+  nodes.clock.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  if (nodes.load.children.length !== 10) nodes.load.innerHTML = '<i></i>'.repeat(10);
+  [...nodes.load.children].forEach((el, k) => el.classList.toggle('off', k >= Math.ceil(G.load * 10 - .001)));
+}
+function reset() {
+  paint.fill(0);
+  Object.assign(G, { phase: 'ready', left: SHIFT, load: 1, painted: 0, mess: 0, down: false });
+  renderHud();
+}
+function finish(early) {
+  G.phase = 'done';
+  G.down = false;
+  G.doneAt = G.time;
+  const cover = coverage(), mess = G.mess / targetTotal;
+  const bonus = early ? Math.round(G.left * .5) : 0;
+  const score = Math.max(0, Math.round(cover * 100 - mess * 100) + bonus);
+  const isBest = score > G.best;
+  if (isBest) { G.best = score; saveBest(score); }
+  const parts = [Math.floor(cover * 100) + '% repainted', Math.round(mess * 100) + '% spilled'];
+  if (bonus) parts.push('+' + bonus + ' for time');
+  parts.push('score ' + score + (isBest ? ', a new best' : ', best ' + G.best), 'tap for another shift');
+  setStatus(parts.join(' · '));
+  sound(early ? 'done' : 'whistle');
+}
+function press() {
+  ensureAudio();
+  if (G.phase === 'done') {
+    if (G.time - G.doneAt > .8) reset();
+    return;
+  }
+  if (G.phase === 'ready') G.phase = 'shift';
+  G.down = true;
+}
+function releasePress() { G.down = false; }
+
+// sweep the roller footprint from the last position to this one. The roller only lays a full-width
+// stripe when it moves along the handle, the way a real one does
+function roll(ax, ay, bx, by) {
+  if (G.load <= 0) return;
+  const fx = Math.cos(B.yaw), fy = Math.sin(B.yaw), rx = -fy, ry = fx;
+  const chance = G.load >= .3 ? 1 : .25 + G.load / .3 * .65;
+  const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / .04)), reach = HALF_ROLL + CELL;
+  let fresh = 0;
+  for (let k = 1; k <= n; k++) {
+    const cx = lerp(ax, bx, k / n), cy = lerp(ay, by, k / n);
+    const gx0 = Math.max(0, Math.floor((cx - reach - LOT.x0) / CELL)), gx1 = Math.min(GW - 1, Math.floor((cx + reach - LOT.x0) / CELL));
+    const gy0 = Math.max(0, Math.floor((cy - reach - LOT.y0) / CELL)), gy1 = Math.min(GH - 1, Math.floor((cy + reach - LOT.y0) / CELL));
+    for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
+      const c = gy * GW + gx;
+      if (paint[c]) continue;
+      const ox = cellX(gx) - cx, oy = cellY(gy) - cy;
+      if (Math.abs(ox * rx + oy * ry) > HALF_ROLL || Math.abs(ox * fx + oy * fy) > HALF_DEPTH) continue;
+      if (inTray(cellX(gx), cellY(gy)) || Math.random() > chance) continue;
+      paint[c] = 1;
+      fresh++;
+      if (target[c]) G.painted++;
+      else if (!near[c]) G.mess++;
+    }
+  }
+  G.load = Math.max(0, G.load - fresh / CAPACITY);
+}
+function update(dt) {
+  G.time += dt;
+  if (keys.size) {
+    const kx = (keys.has('ArrowRight') ? 1 : 0) - (keys.has('ArrowLeft') ? 1 : 0);
+    const ky = (keys.has('ArrowDown') ? 1 : 0) - (keys.has('ArrowUp') ? 1 : 0);
+    // screen directions turned into ground directions, so right on the keyboard is right on the screen
+    if (kx || ky) {
+      const gx = kx + ky, gy = ky - kx, l = Math.hypot(gx, gy);
+      G.tx = R.x + gx / l * 1.2; G.ty = R.y + gy / l * 1.2;
+    }
+  }
+  G.tx = clamp(G.tx, LOT.x0 + .4, LOT.x1 - .4);
+  G.ty = clamp(G.ty, LOT.y0 + .4, LOT.y1 - .4);
+  // the roller chases the target: it eases up to speed and overshoots a little, so it never sticks to the pointer
+  const dx = G.tx - R.x, dy = G.ty - R.y, d = Math.hypot(dx, dy);
+  const top = G.down && G.phase === 'shift' ? ROLL_SPEED : WALK_SPEED;
+  const want = d > .03 ? Math.min(top, d * 3.2) / d : 0;
+  R.vx += (dx * want - R.vx) * Math.min(1, dt * 5);
+  R.vy += (dy * want - R.vy) * Math.min(1, dt * 5);
+  const px = R.x, py = R.y;
+  R.x += R.vx * dt; R.y += R.vy * dt;
+  // the painter hangs off the handle: pulled along behind the roller, and backing up when it comes back
+  const hx = B.x - R.x, hy = B.y - R.y, hl = Math.hypot(hx, hy) || 1;
+  const nx = R.x + hx / hl * REACH, ny = R.y + hy / hl * REACH;
+  B.gait += Math.hypot(nx - B.x, ny - B.y) * 2.4;
+  B.x = nx; B.y = ny;
+  B.yaw = Math.atan2(R.y - B.y, R.x - B.x);
+
+  G.filling = false;
+  G.rolling = 0;
+  if (G.phase === 'shift') {
+    G.left = Math.max(0, G.left - dt);
+    if (G.down) {
+      if (inTray(R.x, R.y, .15)) {
+        if (G.load < 1) G.filling = true;
+        G.load = Math.min(1, G.load + dt / REFILL);
+      } else {
+        roll(px, py, R.x, R.y);
+        if (G.load > 0) G.rolling = Math.min(1, Math.hypot(R.vx, R.vy) / ROLL_SPEED);
+      }
+    }
+    if (coverage() >= DONE_AT) finish(true);
+    else if (G.left <= 0) finish(false);
+  }
+  updateSound();
+  if (G.phase === 'ready') setStatus('move to walk · hold to roll · repaint every faded line');
+  else if (G.phase === 'shift') {
+    if (G.filling) setStatus('loading the roller');
+    else if (G.load <= 0) setStatus('the roller is dry · hold it in the tray to load it');
+    else if (G.load < .3) setStatus('running low · the stripe is going patchy');
+    else if (G.mess > targetTotal * .05) setStatus('paint off the lines counts against you');
+    else setStatus('push straight along each line for a full stripe');
+  }
+  renderHud();
+}
+
+/* ---------- drawing ---------- */
+const PAINT_LIT = PAINT.map(c => rgb(...c)), PAINT_DARK = PAINT.map(c => rgb(c[0] * .54, c[1] * .52, c[2] * .72));
+const DRY = [196, 192, 182];
+const ROLLER_TONES = [0, .25, .5, .75, 1].map(k => DRY.map((v, j) => Math.round(lerp(v, PAINT[1][j], k))));
+function drawPaint() {
+  for (let n = 0; n < lotPixels.length; n++) {
+    const i = lotPixels[n];
+    if (!paint[pixCell[i]] || zb[i] !== groundZ[i]) continue;
+    pix[i] = (staticShadow[i] ? PAINT_DARK : PAINT_LIT)[pixTone[i]];
+  }
+}
+function rollerZ() {
+  const onTray = inTray(R.x, R.y, .15);
+  return ROLL_R + (onTray ? .16 : 0) + (G.down && G.phase !== 'done' ? 0 : .32);
+}
+function drawWorker() {
+  const speed = Math.hypot(R.vx, R.vy), moving = speed > .25;
+  // the gait steps through a few discrete poses, in keeping with the hand-animated wind
+  const swing = moving ? Math.sin(Math.floor(B.gait * 1.3) * Math.PI / 2 + .8) : 0;
+  const down = G.down && G.phase !== 'done';
+  const pose = { scale: WORKER_SCALE, stance: moving ? swing * .15 : .08, lean: down ? .24 : .1, crouch: down ? .12 : 0, armR: down ? 1.2 : 1, armL: down ? 1.05 : .85 };
+  const hand = figure(B.x, B.y, B.yaw, pose, WORKER, dynamicAdd);
+  const fx = Math.cos(B.yaw), fy = Math.sin(B.yaw), rx = -fy, ry = fx, z = rollerZ();
+  const yoke = [R.x - fx * .22, R.y - fy * .22 + 0, z + .26];
+  dynamicAdd(hand, yoke, .05, .045, () => HANDLE);
+  const endA = [R.x + rx * (HALF_ROLL + .04), R.y + ry * (HALF_ROLL + .04), z];
+  dynamicAdd(yoke, [yoke[0] + rx * (HALF_ROLL + .04), yoke[1] + ry * (HALF_ROLL + .04), yoke[2]], .035, .035, () => YOKE);
+  dynamicAdd([yoke[0] + rx * (HALF_ROLL + .04), yoke[1] + ry * (HALF_ROLL + .04), yoke[2]], endA, .035, .035, () => YOKE);
+  const color = ROLLER_TONES[clamp(Math.ceil(G.load * 4), 0, 4)];
+  dynamicAdd([R.x - rx * HALF_ROLL, R.y - ry * HALF_ROLL, z], [R.x + rx * HALF_ROLL, R.y + ry * HALF_ROLL, z], ROLL_R, ROLL_R, () => color);
+}
+function drawTarget() {
+  if (G.phase === 'done' || Math.hypot(G.tx - R.x, G.ty - R.y) < .45) return;
+  const p = project(G.tx, G.ty, 0), x = Math.round(p.sx), y = Math.round(p.sy);
+  const ink = [[x - 3, y], [x - 2, y], [x + 2, y], [x + 3, y], [x, y - 2], [x, y + 2]];
+  haloDots(ink);
+  drawDots(ink, INK);
+}
+function draw() {
+  pix.set(bakedPix);
+  zb.set(bakedZ);
+  pendingShadows.length = 0;
+  drawPaint();
+  drawWorker();
+  const windT = STILL ? 0 : Math.floor(G.time * WIND_FPS) / WIND_FPS;
+  drawLeaves(windT);
+  drawTufts(windT);
+  flushShadows();
+  applyShadows(groundZ);
+  shadeEdges();
+  drawTarget();
+  if (G.phase !== 'done' && G.load < .15 && !G.filling) {
+    const p = project((TRAY.x0 + TRAY.x1) / 2, (TRAY.y0 + TRAY.y1) / 2, .6);
+    drawArrow(p.sx, p.sy, G.time);
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+/* ---------- input ---------- */
+function aim(e) {
+  const r = canvas.getBoundingClientRect();
+  const g = unproject((e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height);
+  G.tx = g.x; G.ty = g.y;
+}
+canvas.addEventListener('pointermove', aim);
+canvas.addEventListener('pointerdown', e => {
+  canvas.focus({ preventScroll: true });
+  canvas.setPointerCapture(e.pointerId);
+  aim(e);
+  press();
+});
+canvas.addEventListener('pointerup', releasePress);
+canvas.addEventListener('pointercancel', releasePress);
+canvas.addEventListener('keydown', e => {
+  if (e.key.startsWith('Arrow')) { e.preventDefault(); keys.add(e.key); return; }
+  if (e.key !== ' ' && e.key !== 'Enter') return;
+  e.preventDefault();
+  if (!e.repeat) press();
+});
+canvas.addEventListener('keyup', e => {
+  if (e.key.startsWith('Arrow')) { keys.delete(e.key); if (!keys.size) { G.tx = R.x; G.ty = R.y; } }
+  if (e.key === ' ' || e.key === 'Enter') releasePress();
+});
+canvas.addEventListener('blur', () => { keys.clear(); releasePress(); });
+
+/* ---------- sound ---------- */
+let audio = null, muted = false, noiseBuffer = null, rollGain = null, rollFilter = null;
+function ensureAudio() {
+  if (audio) { if (audio.state === 'suspended') audio.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio = new AC();
+  noiseBuffer = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  // one looping hiss for the roller: its loudness and pitch follow what the roller is doing
+  const src = audio.createBufferSource();
+  src.buffer = noiseBuffer; src.loop = true;
+  rollFilter = audio.createBiquadFilter();
+  rollFilter.type = 'bandpass'; rollFilter.frequency.value = 520; rollFilter.Q.value = 1.4;
+  rollGain = audio.createGain();
+  rollGain.gain.value = 0;
+  src.connect(rollFilter).connect(rollGain).connect(audio.destination);
+  src.start();
+}
+function updateSound() {
+  if (!rollGain) return;
+  const now = audio.currentTime;
+  const level = muted ? 0 : G.filling ? .07 : G.rolling * .06;
+  rollGain.gain.setTargetAtTime(level, now, .05);
+  rollFilter.frequency.setTargetAtTime(G.filling ? 240 : 420 + G.rolling * 260, now, .05);
+}
+function burst(freq, q, volume, length, delay = 0) {
+  const now = audio.currentTime + delay, src = audio.createBufferSource(), filter = audio.createBiquadFilter(), gain = audio.createGain();
+  src.buffer = noiseBuffer;
+  filter.type = 'bandpass'; filter.frequency.value = freq; filter.Q.value = q;
+  gain.gain.setValueAtTime(volume, now);
+  gain.gain.exponentialRampToValueAtTime(.0005, now + length);
+  src.connect(filter).connect(gain).connect(audio.destination);
+  src.start(now, Math.random() * .5, length + .02);
+}
+function sound(kind) {
+  if (!audio || muted) return;
+  if (kind === 'whistle') { burst(2600, 30, .08, .25); burst(2600, 30, .08, .5, .32); }
+  if (kind === 'done') for (let k = 0; k < 7; k++) burst(1400 + Math.random() * 1200, 3, .03, .12, .1 + k * .09 + Math.random() * .05);
+}
+const muteButton = document.getElementById('mute');
+muteButton.addEventListener('click', () => {
+  muted = !muted;
+  muteButton.textContent = muted ? 'sound off' : 'sound on';
+  muteButton.setAttribute('aria-pressed', String(muted));
+});
+
+/* ---------- boot ---------- */
+addEventListener('resize', fit);
+fit();
+bake();
+reset();
+let last = performance.now();
+function frame(now) {
+  update(Math.min(.04, (now - last) / 1000));
+  last = now;
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__freshPaint = { G, R, B, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); }, press, releasePress, coverage };
+</script>
+</body>
+</html>
