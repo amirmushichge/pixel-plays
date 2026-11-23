@@ -145,7 +145,7 @@ const CUE_T = .6, CUE_NOW = .05, CUE_GAP = [.12, 1.5], CUE_TICK = .45;
 const SHOTS = [
   { speed: [13.5, 17], lift: [10, 44], scatter: 6 },
   { speed: [11.5, 14], lift: [-10, 1], scatter: 5 },
-  { speed: [4.5, 8], lift: [6, 40], scatter: 14 },
+  { speed: [4.5, 8], lift: [0, 28], scatter: 14 },
 ];
 /* the glance behind (SE): played fine, past the bricks and the drum on the side away from the camera, so it is a
    real shot (four, or runs if fine cuts it off) and not a thud into the bricks. It is played softer and kept low */
@@ -194,10 +194,10 @@ const spot = (name, k, r) => {
 const CORNER = { name: 'deep corner', x: CHALK_X - .55, y: CHALK_Y - .6 };
 const FINE = { name: 'fine', x: 10.6, y: -3.9 };
 const FIELDS = {
-  ring: [spot('midwicket', 5.5, 5.2), spot('cover', .5, 5), spot('point', 1.5, 4.6), { ...CORNER }],  // in the gaps
+  ring: [spot('midwicket', 5.8, 5.4), spot('cover', .5, 5), spot('point', 1.5, 4.6), { ...CORNER }],  // in the gaps
   off: [spot('mid-off', 0, 5.6), spot('cover', 1, 4.8), spot('point', 2, 4.6), spot('square', 5, 5.3)],
   leg: [{ ...CORNER }, spot('square leg', 5, 5.3), spot('midwicket', 6, 5.4), spot('cover', 1, 5)],
-  deep: [spot('long-on', 6.8, 14.8), spot('long-off', .4, 7.4), { ...FINE }, { ...CORNER }],
+  deep: [spot('long-on', 6.8, 14.8), spot('deep midwicket', 6, 6), { ...FINE }, { ...CORNER }],
 };
 const FIELDERS = FIELDS.ring;                      // the field the lane starts with
 const FIELD_NAMES = Object.keys(FIELDS);
