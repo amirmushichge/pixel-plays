@@ -1216,7 +1216,7 @@ function finish(d, result, outcome) {
   setStatus(OUTCOME_TEXT(o));
   scoreBall(o);
   // the ball that decides the match: the winners start celebrating now, as the result goes up
-  if (G.match && G.match.result && G.match.result !== 'tie' && !G.cele) startCelebration();
+  if (G.match && G.match.result && !G.cele) startCelebration();
 }
 
 /* ---------- the match ----------
