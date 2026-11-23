@@ -2487,15 +2487,32 @@ function glide(at, f0, f1, length, level, type = 'sine', attack = .005) {
   osc.connect(gain).connect(audio.destination);
   osc.start(at); osc.stop(at + length + .02);
 }
+// a struck body: noise through a narrow band-pass, hit in about a millisecond and dying away. A click, a pock, a clack
+function knock(at, length, level, freq, q = 4, type = 'bandpass') {
+  const src = audio.createBufferSource(), gain = audio.createGain(), filter = audio.createBiquadFilter();
+  src.buffer = noiseBuf;
+  filter.type = type; filter.frequency.value = freq; filter.Q.value = q;
+  gain.gain.setValueAtTime(.0005, at);
+  gain.gain.exponentialRampToValueAtTime(level, at + .001);
+  gain.gain.exponentialRampToValueAtTime(.0005, at + length);
+  src.connect(filter).connect(gain).connect(audio.destination);
+  src.start(at, Math.random() * .2); src.stop(at + length + .02);
+}
 const jit = (a, b) => a + Math.random() * (b - a);  // sound only: never the game's seeded rng
 function sfx(kind, amount = 1) {
   if (!audio || muted || audio.state !== 'running') return;
   const now = audio.currentTime + .005;
   if (kind === 'hit') {
-    // bat on tennis ball: a hollow pock, sharper off the middle, dull off the edge
-    const edge = amount >= 2;
-    hiss(now, .03, edge ? .08 : .16, edge ? 1400 : 2600);
-    glide(now, edge ? 380 : 560, edge ? 150 : 180, edge ? .06 : .08, edge ? .12 : .18 + .06 * (amount === 0), 'square');
+    // bat on tennis ball: a dry wooden pock with no pitch slide. A broadband click, the hollow ring of the ball and
+    // the blade (two damped modes held at one pitch, roughed up with a little noise), and a low thump.
+    // Perfect (0) is fullest, good (1) the plain pock, mistimed (2) thin and clicky
+    const edge = amount >= 2, v = jit(.95, 1.05), loud = [1.2, 1, .65][amount] || 1, body = [1, .6, .2][amount] ?? .6;
+    const f = (edge ? 640 : 470) * jit(.97, 1.03), f2 = (edge ? 1550 : 1180) * jit(.97, 1.03);
+    knock(now, .005, .6 * loud * v * (edge ? 1.5 : 1), jit(2800, 3400), .7);
+    glide(now, f * 1.04, f, .04, .17 * loud * v, 'sine', .001);
+    glide(now, f2 * 1.03, f2, .025, .06 * loud * v * (edge ? 1.6 : 1), 'sine', .001);
+    knock(now, .035, 1.2 * loud * v, f, 4);
+    glide(now, 200 * v, 180 * v, .05, .08 * body * loud, 'sine', .002);
   } else if (kind === 'bounce') {
     glide(now, 200, 90, .07, .04 + .16 * Math.min(1, amount), 'sine');
     hiss(now, .02, .03 * Math.min(1, amount), 1800);
