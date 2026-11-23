@@ -20,6 +20,9 @@
   #you { color: var(--a); } #rival { color: var(--b); }
   #status { color: var(--muted); }
   #need, #over-row { color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* the result takes the need row at the top, clear of the shared credits at the bottom */
+  #need.result { color: var(--ink); max-width: calc(100vw - 32px); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #over-row:not([hidden]) { display: flex; }
   /* this over, one mark per ball: · a dot ball, a number of runs, W a wicket */
   #this-over { display: flex; gap: .7ch; margin-left: 1ch; }
@@ -1269,7 +1272,14 @@ function endMatch() {
   const m = G.match;
   G.phase = 'over';
   m.endT = G.time;
-  setStatus(resultText(m) + ' · tap to play again');
+  // the result goes up in the scoreboard (renderHud); the status line only asks for the tap, so a long result never
+  // runs into the credits at the foot of the page. It is still read out from the status line
+  const text = resultText(m);
+  G.status = text + ' · tap to play again';
+  const sr = document.createElement('span');
+  sr.className = 'sr';
+  sr.textContent = text + ' · ';
+  nodes.status.replaceChildren(sr, 'tap to play again');
   renderHud();
 }
 // after the result, a tap, click or key goes back to the team picker with your team already picked
@@ -1294,7 +1304,9 @@ function renderHud() {
   nodes.overRow.hidden = !m.thisOver.length;
   nodes.target.textContent = 'target ' + m.target;
   const need = m.target - m.runs, left = OVERS * 6 - m.balls;
-  nodes.need.textContent = m.result ? '' : 'need ' + need + ' from ' + plural(left, 'ball');
+  const over = m.result && G.phase === 'over';
+  nodes.need.classList.toggle('result', !!over);
+  nodes.need.textContent = over ? resultText(m) : m.result ? '' : 'need ' + need + ' from ' + plural(left, 'ball');
 }
 // a loose ball: gravity, bounces off the paving, and the drum stops it dead
 function stepLoose(b, dt) {
