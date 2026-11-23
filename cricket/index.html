@@ -79,7 +79,7 @@ const EDGE_X = 13.4, EDGE_Y = 7.5;                             // the near sides
 const CHALK_X = 11.6, CHALK_Y = 5.9;                           // chalk boundary along the two open near sides
 const PATH_W = 1.1;                                            // concrete footpath along the house fronts
 const PITCH_Y = -.3;
-const CREASE_X = 7.1, STUMPS_X = 9.5, BOWL_LINE_X = -3.9, BRICK_X = -4.5;
+const CREASE_X = 6.8, STUMPS_X = 9.5, BOWL_LINE_X = -3.9, BRICK_X = -4.5;
 const BACKSTOP = { x: 10.85, y: -.7, r: .44, h: 1.05 };
 const BRICK = { w: .22, l: .5, h: .17 };                        // one brick: w along x, l along y
 const STUMP_BRICKS = 4, STUMPS_Z = STUMP_BRICKS * BRICK.h;      // the stack's height
@@ -163,9 +163,9 @@ const TEAMS = [
   { id: 'zim', name: 'Zimbabwe', body: [210, 34, 34] },
 ];
 for (const t of TEAMS) t.legs = t.body.map(v => Math.round(v * .78)); // trousers: the body colour, a shade darker
-const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
+const BLADE = [242, 214, 148];                 // pale willow; the engine's edge shading gives it a darker rim
 
-const BATTER = { x: 7.55, y: PITCH_Y + LEG * .25 }; // on the leg side of the stumps line, so the ball passes in front of his pads
+const BATTER = { x: 7.5, y: PITCH_Y + LEG * .5 }; // on the leg side of the stumps line, so the ball passes in front of his pads
 const BOWLER = { x: -6.4, y: -.55 };
 const BOWLER_YAW = 0;                // he runs straight down the pitch, whichever side of it the batter stands
 // the lane's first field: fielders between the eight screen directions from the batter
@@ -951,7 +951,11 @@ function swingAt(dir, t = G.time) {
   if (hitAt >= d.tStumps) grade = 3;
   d.swing = { dir, t, dt, grade, side: grade === 0 ? null : dt < 0 ? 'early' : 'late', against, moved, line };
   if (grade < 3) d.hitAt = hitAt;
-  G.batter.swing = { t0: t, dir, lineY };
+  // the batter's swing (drawing only): it meets the ball where it really is at hitAt, or swings through its line
+  G.batter.swing = null;
+  const meet = grade < 3 ? hitAt : d.tContact, cp = ballAt(d, meet), from = batterAt(t);
+  G.batter.swing = { t0: t, dir, lineY, grade, from, tc: Math.max(grade < 3 ? hitAt : t + BAT_SWING, t + .035), C: { x: cp.x, y: cp.y, z: cp.z } };
+  planSwing(G.batter.swing, d);
   return d.swing;
 }
 /* the swing met the ball: it leaves the bat in the chosen direction, give or take the grade's scatter, at a speed
@@ -1318,7 +1322,7 @@ function update(dt) {
       if (d.stage === 'wait' && d.timer <= 0 && G.auto && fieldSet()) bowl();
     }
   }
-  if (G.batter.swing && G.time - G.batter.swing.t0 > .9) G.batter.swing = null;
+  if (G.batter.swing && G.time - G.batter.swing.tc > BAT_BACK) G.batter.swing = null;
 }
 
 /* ---------- drawing ---------- */
@@ -1341,48 +1345,250 @@ function drawBowler() {
 function drawFigure(p, pose) {
   return figure(p.x, p.y, p.yaw, { scale: FIG_SCALE, ...pose }, p.palette, dynamicAdd);
 }
-const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
-// the batter waits in a high backlift: the top hand reaches across the chest to a grip by the back hip,
-// and the bat points up behind the back shoulder, clear of the body, so it reads against the paving.
-// A swing brings the bat down through the ball's line in front of him, then follows through towards the shot
-// The figure below is a left-hander (chest to +y); a right-hander is the same figure mirrored across the stumps line
+/* ---------- the batter ----------
+   Drawn jointed like the bowler, as a right-hander (back to the camera, chest to -y, left shoulder to the bowler)
+   in his own frame. A left-hander is the same batter mirrored across the stumps line, so HAND flips the stance and
+   every shot without a second set of numbers. The bat is a short dark handle inside both hands (top hand left,
+   bottom hand right, so both arms always move with it) and a big flat willow blade.
+   The bat is placed by its grip (top of the handle), the direction D from handle to toe, and the face normal N.
+   Waiting: side-on, bat grounded by the back foot and tapping. As the bowler lets go: backlift over the right
+   shoulder. A swing: from the backlift the bat comes down the shot's own arc, through the point where it really
+   meets the ball (wherever that is, a late hit included) at the moment the ball leaves it, and on to a finish
+   that points where the ball goes, high for a lofted hit and low for a ground shot; then he settles back.
+   Each shot is an arc: at contact the bat lies along Dc and its toe moves along vc (towards the ball's way), so
+   before contact the toe is always on the far side and after it the bat follows the ball. */
+const BAT = { len: 1.4, handle: .3, blade: .3, half: .085, r: .115, sweet: 1.02, top: .05, bottom: .19 };
+const BAT_TAPE = [70, 62, 58];
+const UP = [0, 0, 1];
+const slerp = (a, b, t) => {
+  const c = clamp(vDot(a, b), -1, 1), w = Math.acos(c);
+  if (w < 1e-4) return vNorm(vMix(a, b, t));
+  if (Math.PI - w < 1e-3) { const p = vNorm(vCross(a, Math.abs(a[2]) < .9 ? UP : [1, 0, 0])); return t < .5 ? slerp(a, p, t * 2) : slerp(p, b, t * 2 - 1); }
+  return vAdd(vMul(a, Math.sin((1 - t) * w) / Math.sin(w)), vMul(b, Math.sin(t * w) / Math.sin(w)));
+};
+const rotate = (v, axis, a) => vAdd(vAdd(vMul(v, Math.cos(a)), vMul(vCross(axis, v), Math.sin(a))), vMul(axis, vDot(axis, v) * (1 - Math.cos(a))));
+const flat = v => vNorm([v[0], v[1], 0]);
+const SIDE_ON = -Math.PI / 2;                      // the right-hander's chest faces -y
+const myY = y => HAND === 'right' ? y : 2 * PITCH_Y - y;       // world <-> the right-hander's frame (its own inverse)
+const myV = v => HAND === 'right' ? v : [v[0], -v[1], v[2]];
+const BAT_C = { x: BATTER.x, y: myY(BATTER.y) };   // where he stands, in his own frame
+/* the eight shots in the right-hander's frame (index = DIRS). E is the way the ball goes. type: drive (vertical
+   bat, front foot), cut / late (horizontal or angled, back and across), glance (wrists, bat angled down, ball
+   fine), pull (horizontal across the body; a sweep on one knee if the ball is low). chest: shoulder turn from
+   side-on at contact and at the finish (negative opens him up towards the bowler and round to leg) */
+const SHOT_KIND = [
+  { type: 'drive', chest: [-.25, -.6] },          // N: off drive, past mid-off
+  { type: 'cut', chest: [-.1, .15] },             // NE: square cut
+  { type: 'late', chest: [.2, .45] },             // E: late cut, down to third man
+  { type: 'glance', chest: [-.25, -.45] },        // SE: fine glance, straight behind
+  { type: 'glance', chest: [-.45, -.85] },        // S: leg glance, fine leg
+  { type: 'pull', chest: [-.9, -1.6] },           // SW: pull or sweep, square leg
+  { type: 'drive', chest: [-.6, -1.5] },          // W: on drive and flick, midwicket
+  { type: 'drive', chest: [-.4, -.85] },          // NW: straight drive, back past the bowler
+];
+const mirrorDir = k => HAND === 'right' ? k : DIR_WORLD.findIndex(w => w[0] === DIR_WORLD[k][0] && w[1] === -DIR_WORLD[k][1]);
+// the bat's line and toe motion at contact for a shot, given the ball's way E (unit, flat) and the contact height
+function shotArc(kind, E, low) {
+  const down = [0, 0, -1];
+  switch (kind.type) {
+    case 'drive': return { Dc: vNorm(vSub(down, vMul(E, .22))), vc: E };
+    case 'cut': return { Dc: vNorm([-.75, -.3, -.55]), vc: vNorm([.05, -.65, -.75]) };
+    case 'late': return { Dc: vNorm([-.25, -.55, -.8]), vc: vNorm([.75, -.25, -.35]) };
+    case 'glance': return { Dc: vNorm([-.15 + E[0] * .1, .2, -1]), vc: vNorm([E[0], E[1], 0]) };
+    default: return low ? { Dc: vNorm([-.85, -.05, -.5]), vc: [0, 1, 0], sweep: true } : { Dc: vNorm([-1, -.1, -.12]), vc: vNorm([0, 1, .12]) };
+  }
+}
+// the waiting stance and the backlift, in his own frame
+function standBody(lift, tap) {
+  const x = BAT_C.x, y = BAT_C.y, k = FIG_SCALE;
+  const body = { kind: 'bat', k, pelvis: [x + .03 * lift, y, (1.16 - .03 * lift) * k], hipYaw: SIDE_ON + .12, chestYaw: SIDE_ON - .12 - .1 * lift, lean: .34 - .06 * lift, roll: 0,
+    footL: [x - .29 - .05 * lift, y + .03, .12 + .03 * lift * (1 - lift)], footR: [x + .3, y - .02, .12], toeL: SIDE_ON - .55, toeR: SIDE_ON + .1 };
+  // grounded: hands at the waist in front of him, toe of the bat by the back foot, face to the bowler; tapping
+  const gS = [x - .02, y - .36, 1.2 + .07 * tap], dS = vNorm([.3, -.62, -1.18 + .1 * tap]);
+  // backlift: hands by the back hip, the toe up over the right shoulder, face open to the off side
+  const gB = [x + .26, y - .36, 1.45], dB = vNorm([.62, -.08, .78]);
+  const bat = { G: vMix(gS, gB, lift), D: slerp(dS, dB, lift), N: slerp([-1, 0, 0], vNorm([-.2, -1, 0]), lift) };
+  return { body, bat };
+}
+function shotBody(kind, C, E, phase, sweep) {
+  const x = BAT_C.x, y = BAT_C.y, k = FIG_SCALE, front = kind.type === 'drive' || kind.type === 'glance' && E[0] < 0 || sweep;
+  const reachX = clamp(C.x + (front ? .55 : .9), CREASE_X + .18, x - .1);  // a front foot towards the ball, never out of the crease
+  const chest = SIDE_ON + kind.chest[phase], hips = SIDE_ON + .12 + (kind.chest[phase] - .12) * .6;
+  const lineSide = clamp(C.y - y, -.5, .1);
+  let pelvis, footL, footR, lean, toeL = SIDE_ON - .5 + (phase ? kind.chest[1] * .4 : 0), toeR = SIDE_ON + .1 + (phase ? kind.chest[1] * .35 : 0);
+  if (sweep) {        // down on the right knee, front leg out towards the ball
+    footL = [reachX - .1, y + lineSide * .6, .12]; footR = [x + .72, y + .08, .12];
+    pelvis = [x + .3, y + .04, .74 * k]; lean = phase ? .2 : .4;
+  } else if (front) { // weight onto a front foot planted towards the ball
+    footL = [reachX, y + lineSide * .7, .12]; footR = [x + .3, y - .02, .12];
+    pelvis = [lerp(reachX, x + .3, .48), y + lineSide * .15, (phase ? 1.12 : 1.06) * k]; lean = phase ? .22 : .36;
+  } else {            // back and across: the back foot goes towards the off side, the front foot comes back to it
+    footR = [x + .38, y - .2, .12]; footL = [x - .22, y - .05, .12];
+    pelvis = [x + .1, y - .12, 1.14 * k]; lean = kind.type === 'pull' ? .15 : .3;
+  }
+  return { kind: 'bat', k, pelvis, hipYaw: hips, chestYaw: chest, lean, roll: kind.type === 'cut' || kind.type === 'late' ? .12 : 0, footL, footR, toeL, toeR };
+}
+const BAT_SWING = .11, BAT_THROUGH = .08, BAT_FINISH = .3, BAT_HOLD = .55, BAT_BACK = 1.05;
+const BAT_COMMIT = .09, BODY_IN = .14;                            // he starts the bat down this long before the ball arrives
+// two bat keys: along the shot's arc when both are on it (so a finish can go right over the top), else the short way
+const mixBat = (a, b, u) => a.arc && a.arc === b.arc
+  ? { ...arcBat(a.sw, lerp(a.phi, b.phi, u), vMix(a.G, b.G, u)) }
+  : { G: vMix(a.G, b.G, u), D: slerp(a.D, b.D, u), N: slerp(a.N, b.N, u) };
+const mixState = (a, b, u) => ({ body: mixBody(a.body, b.body, u), bat: mixBat(a.bat, b.bat, u) });
+const arcBat = (sw, phi, g) => ({ G: g, D: rotate(sw.arc.Dc, sw.arc.axis, phi), N: rotate(sw.arc.Nc, sw.arc.axis, phi), arc: sw.arc, sw, phi });
+// the batter at time t with no shot played: tapping, the backlift, and the bat starting down as the ball comes;
+// if no shot comes he checks it and lifts it away, then settles once the ball has gone
+function waitingAt(t) {
+  const d = G.del, idle = G.phase === 'pick' || !d.t0 || d.stage === 'wait';
+  let lift = idle ? 0 : ease(clamp((t - (d.tRelease - .18)) / .3, 0, 1));
+  if (!idle && d.tStumps && t > d.tStumps + .1) lift *= 1 - ease(clamp((t - d.tStumps - .1) / .45, 0, 1));
+  const tap = idle ? Math.max(0, Math.sin(t * 7)) ** 3 * (Math.floor(t * 7 / Math.PI / 2) % 3 === 2 ? 0 : 1) : 0;
+  const rest = standBody(lift, tap);
+  if (idle || !d.tContact) return rest;
+  const start = d.tContact - BAT_COMMIT, u = t < start ? 0 : t < d.tContact ? ease((t - start) / BAT_COMMIT) : 1 - ease(clamp((t - d.tContact - .03) / .25, 0, 1));
+  if (u <= 0) return rest;
+  if (!d.commit) {   // a straight bat coming down the ball's line
+    const c = ballAt(d, d.tContact), sw = { dir: HAND === 'right' ? 7 : 7, grade: 1, C: { x: c.x, y: c.y, z: c.z } };
+    planSwing(sw, d);
+    d.commit = { body: mixBody(standBody(1, 0).body, shotBody(SHOT_KIND[7], sw.C, sw.E, 0, false), .45), bat: arcBat(sw, -1.75, vAdd(vAdd(sw.gC, vMul(sw.arc.vc, -.3)), [0, 0, .4])) };
+  }
+  return mixState(rest, d.commit, u * .9);
+}
+// the whole batter at time t, in his own frame: { body, bat }
+function batterAt(t) {
+  const sw = G.batter.swing;
+  if (!sw || t < sw.t0) return waitingAt(t);
+  const s = t - sw.t0, tc = sw.tc - sw.t0, from = sw.from, kind = SHOT_KIND[sw.dirC], E = sw.E, gC = sw.gC, vc = sw.arc.vc;
+  // from wherever the bat was at the press: round the shot's arc (less of it when there is less time), through the
+  // ball at the moment it leaves the bat, on through, and up (or along) to the finish; then back to waiting
+  const reach = clamp(tc / BAT_SWING, .35, 1);
+  const pre = arcBat(sw, -1.15 * reach, vAdd(vAdd(gC, vMul(vc, -.5 * reach)), [0, 0, .3 * reach]));
+  const con = arcBat(sw, 0, gC);
+  const thr = arcBat(sw, .9, vAdd(vAdd(gC, vMul(vc, .45)), [0, 0, .25]));
+  const sh = vMix(sw.frame.shL, sw.frame.shR, .5);
+  const high = sw.high && kind.type !== 'glance';
+  const fin = arcBat(sw, high ? 3.3 : 1.5, high ? vAdd(vAdd(sh, vMul(E, .25)), [0, 0, .3]) : vAdd(vAdd(gC, vMul(vc, .7)), [0, 0, .4]));
+  const bodyC = shotBody(kind, sw.C, E, 0, sw.arc.sweep), bodyF = shotBody(kind, sw.C, E, 1, sw.arc.sweep);
+  // the body steps into the shot over at least BODY_IN, even when the bat gets there sooner, then turns through
+  const tIn = Math.max(tc, BODY_IN), bodyNow = s <= tIn ? mixBody(from.body, bodyC, ease(s / tIn)) : s <= tIn + BAT_FINISH ? mixBody(bodyC, bodyF, ease((s - tIn) / BAT_FINISH)) : bodyF;
+  const tPre = Math.min(tc * .55, BAT_SWING * .6);
+  if (s <= tPre) return { bat: mixBat(from.bat, pre, ease(s / tPre)), body: bodyNow };
+  if (s <= tc) { const u = (s - tPre) / (tc - tPre); return { bat: mixBat(pre, con, u * u * .5 + u * .5), body: bodyNow }; }
+  if (s <= tc + BAT_THROUGH) return { bat: mixBat(con, thr, ((s - tc) / BAT_THROUGH) * (2 - (s - tc) / BAT_THROUGH)), body: bodyNow };
+  if (s <= tc + BAT_FINISH) return { bat: mixBat(thr, fin, ease((s - tc - BAT_THROUGH) / (BAT_FINISH - BAT_THROUGH))), body: bodyNow };
+  if (s <= tc + BAT_HOLD) return { bat: fin, body: bodyNow };
+  const u = ease(clamp((s - tc - BAT_HOLD) / (BAT_BACK - BAT_HOLD), 0, 1)), rest = waitingAt(t);
+  return { bat: mixBat(fin, rest.bat, u), body: mixBody(bodyNow, rest.body, u) };
+}
+// plan the swing's arc when the button is pressed: the shot for the direction, and where it meets the ball
+function planSwing(sw, d) {
+  const C0 = sw.C, C = [C0.x, myY(C0.y), C0.z], dirC = mirrorDir(sw.dir), kind = SHOT_KIND[dirC];
+  const w = DIR_WORLD[dirC], E = vNorm([w[0], w[1], 0]);
+  const arc = shotArc(kind, E, C[2] < .75);
+  // the shoulders he will have at contact; if the bat along Dc would leave the hands out of reach, the bat tilts
+  // towards the ball until they can reach (a ball struck late, behind him, is played with the bat reaching back)
+  const bodyC = shotBody(kind, { x: C[0], y: C[1], z: C[2] }, E, 0, arc.sweep), frame = bodyFrame(bodyC);
+  const S = vMix(frame.shL, frame.shR, .5), toBall = vNorm(vSub(C, S));
+  let Dc = arc.Dc;
+  for (let i = 1; i <= 10; i++) {
+    const g = vSub(C, vMul(Dc, BAT.sweet * FIG_SCALE));
+    if (vLen(vSub(vAdd(g, vMul(Dc, BAT.bottom * FIG_SCALE)), frame.shR)) < ARM_LEN * .97 * FIG_SCALE && vLen(vSub(vAdd(g, vMul(Dc, BAT.top * FIG_SCALE)), frame.shL)) < ARM_LEN * .97 * FIG_SCALE) break;
+    Dc = slerp(arc.Dc, toBall, i / 10);
+  }
+  let axis = vCross(Dc, arc.vc);
+  if (vLen(axis) < .2) axis = vCross(Dc, UP);
+  axis = vNorm(axis);
+  // the face looks the way the toe is moving
+  const vt = vNorm(vCross(axis, Dc));
+  sw.dirC = dirC; sw.E = E; sw.C = { x: C[0], y: C[1], z: C[2] }; sw.frame = frame;
+  sw.arc = { Dc, vc: arc.vc, Nc: vt, axis, sweep: arc.sweep };
+  sw.gC = vSub(C, vMul(Dc, BAT.sweet * FIG_SCALE));
+  sw.high = sw.grade === 3 || sw.grade === 0 || sw.grade === 2;  // lofted perfect, looping mistimed, and air shots finish high
+}
+/* the final batter at time t: both hands on the handle, and both within reach. If the bat is out of reach the body
+   leans to it first (the hips shift, the feet stay; the legs bend to suit), and only what is left moves the bat */
+function poseBatter(t, lean) {
+  const { body, bat } = batterAt(t), k = FIG_SCALE, reach = ARM_LEN * .985 * k;
+  const hands = () => [vAdd(bat.G, vMul(bat.D, BAT.top * k)), vAdd(bat.G, vMul(bat.D, BAT.bottom * k))];
+  const excess = () => {
+    const f = bodyFrame(body), [hl, hr] = hands();
+    let push = [0, 0, 0], worst = 0;
+    for (const [h, sh] of [[hl, f.shL], [hr, f.shR]]) {
+      const v = vSub(h, sh), n = vLen(v), e = n - reach;
+      if (e > 0) { push = vAdd(push, vMul(v, e / n)); worst = Math.max(worst, e); }
+    }
+    return { push, worst };
+  };
+  // the bat may not pass through him: where the handle or blade comes inside his chest, he leans away from it
+  const clash = () => {
+    const f = bodyFrame(body), a = body.pelvis, ab = vSub(f.neck, a);
+    let push = [0, 0, 0], worst = 0;
+    for (let q = 0; q <= BAT.len; q += .1) {
+      const p = vAdd(bat.G, vMul(bat.D, q * k)), u = clamp(vDot(vSub(p, a), ab) / vDot(ab, ab), 0, 1), c = vAdd(a, vMul(ab, u));
+      const v = vSub(c, p); v[2] = 0;
+      const n = vLen(v), e = (q < BAT.blade ? .38 : .42) * k - vLen(vSub(c, p));
+      if (e > 0 && n > 1e-6) { push = vAdd(push, vMul(v, e / n)); worst = Math.max(worst, e); }
+    }
+    return { push, worst };
+  };
+  let moved = [0, 0, 0];
+  const base = body.pelvis;
+  for (let i = 0; i < 6 && !lean; i++) {
+    const c = clash();
+    if (c.worst > 1e-3) {
+      const room = .4 - vLen(moved), st = vLen(c.push) > room ? vMul(c.push, Math.max(0, room) / vLen(c.push)) : c.push;
+      moved = vAdd(moved, st);
+      body.pelvis = vAdd(body.pelvis, st);
+      body.pelvis[2] = Math.min(body.pelvis[2], reachZ(body.pelvis, body.hipYaw, [{ pos: body.footL, planted: true }, { pos: body.footR, planted: true }], k));
+    }
+    const { push, worst } = excess();
+    if (worst < 1e-4 && c.worst <= 1e-3) break;
+    if (worst < 1e-4) continue;
+    const step = vMul([push[0], push[1], push[2] * .5], .9), room = .45 - vLen(moved);
+    if (room <= 0) break;
+    const s = vLen(step) > room ? vMul(step, room / vLen(step)) : step;
+    moved = vAdd(moved, s);
+    body.pelvis = vAdd(body.pelvis, s);
+    body.pelvis[2] = Math.min(body.pelvis[2], reachZ(body.pelvis, body.hipYaw, [{ pos: body.footL, planted: true }, { pos: body.footR, planted: true }], k));
+  }
+  // a given lean (smoothed over frames by drawBatter) replaces the one just worked out
+  if (lean) { body.pelvis = vAdd(base, lean); body.pelvis[2] = Math.min(body.pelvis[2], reachZ(body.pelvis, body.hipYaw, [{ pos: body.footL, planted: true }, { pos: body.footR, planted: true }], k)); }
+  else moved = vSub(body.pelvis, base);
+  for (let i = 0; i < 4; i++) {
+    const { push, worst } = excess();
+    if (worst < 1e-4) break;
+    bat.G = vSub(bat.G, vMul(push, i < 3 ? .6 : 1));
+  }
+  [body.handL, body.handR] = hands();
+  const f = bodyFrame(body);
+  body.poleL = vAdd(vMul(f.fwd, .3), [-.6, 0, -.5]);
+  body.poleR = vAdd(vMul(f.fwd, -.2), [.5, .3, -.6]);
+  return { body, bat, moved };
+}
+// the lean towards or away from the bat is eased over a few frames, so the body never jumps when the bat whips
+const LEAN_T = .05;
 function drawBatter() {
-  const k = FIG_SCALE, flip = LEG > 0, my = y => flip ? 2 * PITCH_Y - y : y;
-  const p = { ...G.batter, y: my(G.batter.y) }, pose = p.pose;
-  const add = flip ? (a, b, r0, r1, f) => dynamicAdd([a[0], my(a[1]), a[2]], [b[0], my(b[1]), b[2]], r0, r1, f) : dynamicAdd;
-  let bone = 0;
-  // bones 10 and 11 are the front arm; it is drawn below instead, crossing to the grip
-  figure(p.x, p.y, p.yaw, { scale: k, ...pose }, p.palette, (a, b, r0, r1, f) => { if (bone !== 10 && bone !== 11) add(a, b, r0, r1, f); bone++; });
-  const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), sx = -fy, sy = fx;
-  const P = (f, s, z) => [p.x + (fx * f + sx * s) * k, p.y + (fy * f + sy * s) * k, z * k];
-  const shZ = 1.28 - pose.crouch * .4 + Math.cos(pose.lean) * .95, shA = -pose.crouch * .15 + Math.sin(pose.lean) * .95;
-  const shoulder = P(shA, .36, shZ - .03);
-  let grip = P(shA + .05, -.5, shZ - .45), dir = [.32, -.12, 1];
-  const sw = p.swing;
-  if (sw) {
-    const s = G.time - sw.t0, back = { grip, dir };
-    // down through the line of the ball, just in front of the crease
-    const g1 = P(shA + .3, .55, shZ - .85), d1 = [CONTACT_X - g1[0], my(sw.lineY) - g1[1], .3 - g1[2]];
-    // and on up towards the chosen direction
-    const w = [DIR_WORLD[sw.dir][0], flip ? -DIR_WORLD[sw.dir][1] : DIR_WORLD[sw.dir][1]], n = Math.hypot(w[0], w[1]);
-    const g2 = [p.x + w[0] / n * .45 * k, p.y + w[1] / n * .45 * k, (shZ - .2) * k], d2 = [w[0] / n, w[1] / n, .9];
-    const keys = [[0, back.grip, back.dir], [.07, g1, d1], [.25, g2, d2], [.6, g2, d2], [.9, back.grip, back.dir]];
-    for (let i = 1; i < keys.length; i++) {
-      if (s > keys[i][0] && i < keys.length - 1) continue;
-      const [t0, ga, da] = keys[i - 1], [t1, gb, db] = keys[i], u = ease(clamp((s - t0) / (t1 - t0), 0, 1));
-      grip = lerp3(ga, gb, u);
-      const la = Math.hypot(...da), lb = Math.hypot(...db);
-      dir = lerp3(da.map(v => v / la), db.map(v => v / lb), u);
-      break;
+  const p = G.batter, target = poseBatter(G.time).moved, f0 = p.fit, dt = f0 ? G.time - f0.t : 1;
+  const lean = dt > 0 && dt < .1 ? vMix(f0.lean, target, 1 - Math.exp(-dt / LEAN_T)) : target;
+  p.fit = { t: G.time, lean };
+  const { body, bat } = poseBatter(G.time, vLen(lean) > 1e-9 ? lean : [0, 0, 1e-12]), k = FIG_SCALE;
+  const add = HAND === 'right' ? dynamicAdd : (a, b, r0, r1, c) => dynamicAdd([a[0], myY(a[1]), a[2]], [b[0], myY(b[1]), b[2]], r0, r1, c);
+  drawBody(body, p.palette, add);
+  // the bat: a short taped handle that ends inside the bottom hand's reach, then a wide flat blade: two capsules
+  // side by side across the face, so it reads as a board and not a stick
+  const D = bat.D, N = vNorm(vSub(bat.N, vMul(D, vDot(bat.N, D)))), Wd = vNorm(vCross(D, N));
+  const pt = (s, w) => { const q = vAdd(vAdd(bat.G, vMul(D, s * k)), vMul(Wd, w * k)); return [q[0], q[1], Math.max(.04, q[2])]; };
+  add(pt(-.02, 0), pt(BAT.handle, 0), .055 * k, .06 * k, () => BAT_TAPE);
+  for (const w of [-BAT.half, BAT.half]) add(pt(BAT.blade + .06, w), pt(BAT.len - .05, w), BAT.r * k, BAT.r * k, () => BLADE);
+  // a whip: when the blade moves further than it can be followed in one frame (a press right on the ball), smear it
+  // with in-between blades along its path, solid like the bat itself
+  if (G.batter.swing) {
+    const was = poseBatter(G.time - 1 / 60).bat, toe = b => vAdd(b.G, vMul(b.D, BAT.len * k)), gap = vLen(vSub(toe(bat), toe(was)));
+    for (let i = 1, n = Math.min(3, Math.floor(gap / .55)); i <= n; i++) {
+      const m = mixBat(was, bat, i / (n + 1)), q = s => vAdd(m.G, vMul(m.D, s * k));
+      add(q(BAT.blade + .1), q(BAT.len - .1), BAT.r * .8 * k, BAT.r * .8 * k, () => BLADE);
     }
   }
-  const elbow = [lerp(shoulder[0], grip[0], .5) + fx * .3 * k, lerp(shoulder[1], grip[1], .5) + fy * .3 * k, lerp(shoulder[2], grip[2], .5) - .08 * k];
-  add(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
-  add(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
-  const len = Math.hypot(...dir);
-  const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, Math.max(.05, grip[2] + dir[2] / len * d * k)];
-  add(at(-.05), at(.36), .06 * k, .06 * k, () => GRIP);
-  add(at(.4), at(1.22), .15 * k, .15 * k, () => BLADE);
 }
 // the batter's stumps are a stack of bricks, staggered like a gully wicket. Bowled, they topple back off the stack:
 // the higher a brick sat, the further it goes
