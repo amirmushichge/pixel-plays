@@ -911,6 +911,8 @@ const releasePose = type => ({ scale: FIG_SCALE, stance: .3, lean: BOWLERS[type]
 function bowl(opts = {}) {
   if (G.phase !== 'idle' || G.match && G.match.result) return null;
   const f = { ...G.force, ...opts };
+  // what this ball changes before it is settled, so a delivery cut short by a dialog can be taken back (see pause)
+  const undo = { over: G.over, ballInOver: G.ballInOver, overType: G.overType, thisOver: G.match && G.match.thisOver, status: nodes.status.textContent };
   if (G.ballInOver >= 6) {
     G.over++; G.ballInOver = 0;
     if (G.match) G.match.thisOver = [];
@@ -924,7 +926,7 @@ function bowl(opts = {}) {
   const aim = PITCH_Y + (f.offset != null ? f.offset : range(LINES[line]));
   const px = f.length != null ? f.length : range(B.pitch);
   G.balls++; G.ballInOver++;
-  const d = { stage: 'runup', n: G.balls, type, line, move, amount, aim, t0: G.time, mark: B.mark, runT: (RELEASE_X - B.mark) / B.run, swing: null, hitAt: null, bounced: false };
+  const d = { stage: 'runup', n: G.balls, type, line, move, amount, aim, t0: G.time, mark: B.mark, runT: (RELEASE_X - B.mark) / B.run, swing: null, hitAt: null, bounced: false, undo };
   // the ball leaves the bowling hand at the top of the delivery stride
   const hand = figure(RELEASE_X, BOWLER.y, BOWLER_YAW, releasePose(type), G.bowler.palette, () => {});
   d.R = { x: hand[0], y: hand[1], z: hand[2] };
@@ -2578,9 +2580,37 @@ document.getElementById('team').addEventListener('click', openPicker);
 addEventListener('resize', fit);
 fit();
 bake();
+/* pause: while any dialog is open (the team picker or the shell's Rules) or the tab is hidden, the match clock
+   stops, so nothing is bowled and no sound cue fires. A delivery that was under way does not count: on the way back
+   it is taken back and bowled again from the mark. A ball that has already been settled plays out as normal */
+const pausedNow = () => document.hidden || !!document.querySelector('dialog[open]');
+function checkPause() {
+  const p = pausedNow();
+  if (p && !G.paused) G.paused = { del: G.del };
+  else if (!p && G.paused) {
+    const d = G.paused.del;
+    G.paused = null;
+    // (unless the picker started a new match meanwhile, which has its own fresh delivery)
+    if (d === G.del && (d.stage === 'runup' || d.stage === 'flight' || d.stage === 'live')) takeBack(d);
+  }
+  return !!G.paused;
+}
+function takeBack(d) {
+  const u = d.undo;
+  G.balls--; G.over = u.over; G.ballInOver = u.ballInOver; G.overType = u.overType;
+  if (G.match && u.thisOver) G.match.thisOver = u.thisOver;
+  G.del = { stage: 'wait', timer: .6 };
+  G.ball = null; G.chord = null; G.batter.swing = null; G.stumps.down = false; G.react = null;
+  heldArrows.clear();
+  setField(fieldFor(G.over), true);
+  Object.assign(G.bowler, { x: d.mark, y: BOWLER.y, yaw: BOWLER_YAW, pose: POSE_BOWLER, body: null, drawn: null, fade: null, walk: 0 });
+  setStatus(u.status);
+  renderHud();
+}
+addEventListener('visibilitychange', checkPause);
 let last = performance.now();
 function frame(now) {
-  if (!G.frozen) update(Math.min(.04, (now - last) / 1000));
+  if (!checkPause() && !G.frozen) update(Math.min(.04, (now - last) / 1000));
   last = now;
   draw();
   requestAnimationFrame(frame);
