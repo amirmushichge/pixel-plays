@@ -69,9 +69,21 @@ const FIG_SCALE = 1;
 
 const SKIN = [[222, 170, 132], [196, 146, 110], [170, 120, 88], [128, 88, 64], [150, 104, 74], [214, 164, 128]];
 const HAIR = [[38, 28, 24], [30, 26, 24], [60, 44, 34], [24, 22, 22], [52, 40, 32], [36, 30, 28]];
-// placeholder kits until the team kits land
-const KIT_BAT = { shirt: [44, 96, 186], stripe: [44, 96, 186], legs: [36, 62, 118] };
-const KIT_FIELD = { shirt: [84, 140, 96], stripe: [84, 140, 96], legs: [64, 92, 72] };
+/* 1992 World Cup kits. Every team wore one template: a solid body colour, a contrasting collar, and a
+   band of blue / green / red stripes across the shoulders and upper chest that runs out along the tops
+   of the sleeves. The stripes are the same on every team, so the body colour carries the identity. */
+const YOKE = [[40, 92, 206], [34, 150, 84], [214, 44, 44]];
+const TEAMS = [
+  { id: 'aus', name: 'Australia', body: [244, 204, 40], collar: [24, 110, 66] },
+  { id: 'eng', name: 'England', body: [140, 190, 236], collar: [26, 40, 92] },
+  { id: 'ind', name: 'India', body: [30, 38, 92], collar: [240, 196, 48] },
+  { id: 'nz', name: 'New Zealand', body: [204, 206, 206], collar: [30, 30, 34] },
+  { id: 'pak', name: 'Pakistan', body: [150, 214, 48], collar: [244, 236, 214] },
+  { id: 'sa', name: 'South Africa', body: [26, 122, 66], collar: [246, 204, 46] },
+  { id: 'sl', name: 'Sri Lanka', body: [34, 76, 196], collar: [246, 206, 52] },
+  { id: 'wi', name: 'West Indies', body: [118, 24, 46], collar: [246, 204, 46] },
+  { id: 'zim', name: 'Zimbabwe', body: [210, 34, 34], collar: [246, 210, 52] },
+];
 const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
 
 const BATTER = { x: 7.55, y: .15 };
@@ -393,15 +405,42 @@ function bake() {
 }
 
 /* ---------- game state ---------- */
-const person = (spot, k, kit, yaw) => ({ x: spot.x, y: spot.y, yaw, palette: { ...kit, skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
+// idle poses; a kit's yoke is measured down from the shoulder line of the pose it is worn in
+const POSE_BATTER = { crouch: .3, lean: .16, stance: .02, armR: .2, armL: .55 };
+const POSE_BOWLER = { stance: .12, armR: .2, armL: .1 };
+const POSE_FIELDER = { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 };
+const shoulderOf = pose => 1.28 - (pose.crouch || 0) * .4 + Math.cos(pose.lean || 0) * .95;
+// a figure palette for one team. shirtAt(h) gets the height above the feet in figure units:
+// collar at the neck, then three yoke stripes about 3px tall each, then the body colour
+function kitPalette(team, pose) {
+  const top = shoulderOf(pose), [blue, green, red] = YOKE;
+  return {
+    shirt: team.body, stripe: team.body, legs: team.body,
+    shirtAt: h => h > top + .06 ? blue : h > top - .22 ? green : h > top - .5 ? red : team.body,
+  };
+}
+const person = (spot, k, yaw, pose) => ({ x: spot.x, y: spot.y, yaw, pose, palette: { skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
 const facing = (from, to) => Math.atan2(to.y - from.y, to.x - from.x);
 const G = {
-  phase: 'idle', time: 0, status: '',
+  phase: 'pick', time: 0, status: '',
+  you: null, rival: null,
   // the batter stands side-on: chest towards +y (the camera side, the off side), front shoulder to the bowler
-  batter: person(BATTER, 0, KIT_BAT, Math.PI / 2),
-  bowler: person(BOWLER, 1, KIT_FIELD, facing(BOWLER, BATTER)),
-  fielders: FIELDERS.map((s, k) => ({ name: s.name, ...person(s, k + 2, KIT_FIELD, facing(s, BATTER)) })),
+  batter: person(BATTER, 0, Math.PI / 2, POSE_BATTER),
+  bowler: person(BOWLER, 1, facing(BOWLER, BATTER), POSE_BOWLER),
+  fielders: FIELDERS.map((s, k) => ({ name: s.name, ...person(s, k + 2, facing(s, BATTER), POSE_FIELDER) })),
 };
+// dress the batter in your kit and the fielding side in the rival's (drawn from the other eight if not given)
+function setTeams(youId, rivalId) {
+  const you = TEAMS.find(t => t.id === youId);
+  const others = TEAMS.filter(t => t !== you);
+  const rival = others.find(t => t.id === rivalId) || others[Math.floor(Math.random() * others.length)];
+  G.you = you; G.rival = rival;
+  const dress = (p, team) => { p.palette = { ...kitPalette(team, p.pose), skin: p.palette.skin, hair: p.palette.hair }; };
+  dress(G.batter, you);
+  for (const p of [G.bowler, ...G.fielders]) dress(p, rival);
+  return { you: you.id, rival: rival.id };
+}
+setTeams(TEAMS[0].id, TEAMS[1].id); // something to wear behind the picker
 
 const nodes = {
   runs: document.getElementById('runs'),
@@ -427,7 +466,7 @@ function drawFigure(p, pose) {
 // the batter waits in a high backlift: the top hand reaches across the chest to a grip by the back hip,
 // and the bat points up behind the back shoulder, clear of the body, so it reads against the paving
 function drawBatter() {
-  const p = G.batter, k = FIG_SCALE, pose = { crouch: .3, lean: .16, stance: .02, armR: .2, armL: .55 };
+  const p = G.batter, k = FIG_SCALE, pose = p.pose;
   let bone = 0;
   // bones 10 and 11 are the front arm; it is drawn below instead, crossing to the grip
   figure(p.x, p.y, p.yaw, { scale: k, ...pose }, p.palette, (a, b, r0, r1, f) => { if (bone !== 10 && bone !== 11) dynamicAdd(a, b, r0, r1, f); bone++; });
@@ -435,7 +474,7 @@ function drawBatter() {
   const P = (f, s, z) => [p.x + (fx * f + sx * s) * k, p.y + (fy * f + sy * s) * k, z * k];
   const shZ = 1.28 - pose.crouch * .4 + Math.cos(pose.lean) * .95, shA = -pose.crouch * .15 + Math.sin(pose.lean) * .95;
   const shoulder = P(shA, .36, shZ - .03), grip = P(shA + .05, -.5, shZ - .45), elbow = P(shA + .38, .05, shZ - .55);
-  dynamicAdd(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
+  dynamicAdd(shoulder, elbow, .12 * k, .1 * k, byHeight(z => p.palette.shirtAt(z / k)));
   dynamicAdd(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
   const dir = [.32, -.12, 1], len = Math.hypot(...dir);
   const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, grip[2] + dir[2] / len * d * k];
@@ -446,8 +485,8 @@ function draw() {
   pix.set(bakedPix);
   zb.set(bakedZ);
   pendingShadows.length = 0;
-  drawFigure(G.bowler, { stance: .12, armR: .2, armL: .1 });
-  for (const f of G.fielders) drawFigure(f, { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 });
+  drawFigure(G.bowler, G.bowler.pose);
+  for (const f of G.fielders) drawFigure(f, f.pose);
   drawBatter();
   const windT = STILL ? 0 : Math.floor(G.time * WIND_FPS) / WIND_FPS;
   drawLeaves(windT);
@@ -483,7 +522,7 @@ const LANE = {
   WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
-window.__cricket = { G, LANE, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
+window.__cricket = { G, LANE, TEAMS, setTeams, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
 </script>
 </body>
 </html>
