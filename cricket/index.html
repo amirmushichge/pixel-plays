@@ -86,8 +86,13 @@ const STUMP_BRICKS = 4, STUMPS_Z = STUMP_BRICKS * BRICK.h;      // the stack's h
 const FIG_SCALE = 1;
 
 /* ---------- bowling and batting ----------
-   Times are seconds and speeds are world units per second. +y is the off side for the right-handed batter,
-   so a ball that nips "in" moves towards -y (the leg side) after the bounce and one that goes "away" moves to +y. */
+   Times are seconds and speeds are world units per second. The engine's ground is mirrored when seen from above
+   (+x runs screen down-right, +y screen down-left), so a right-hander facing the bowler (-x) shows his back to the
+   camera and his chest to -y: for him -y is the off side and +y the leg side. HAND picks the batter; LEG is the
+   sign of y on his leg side. A ball that nips "in" moves towards his body (the leg side) after the bounce, and
+   one that goes "away" moves towards the off side. Ball paths are the same for either hand; only names flip. */
+const HAND = 'right';                              // 'left' mirrors the stance, the sides and every shot
+const LEG = HAND === 'right' ? 1 : -1;
 const BALL_R = .2, BALL_COLOR = [216, 236, 72], GRAVITY = 12;  // a tennis ball, drawn a little large so it reads
 const RELEASE_X = -4.4;                            // the bowler's front foot lands just behind the chalk line
 const CONTACT_X = 6.9;                             // the bat meets the ball a stride in front of the batter
@@ -103,14 +108,15 @@ const BOWLERS = {
   spin: { mark: -6.8, run: 2.4, stride: 6, step: .16, lean: .06, deliver: .4, speed: 9.5, after: .8, bounce: .42, pitch: [1.6, 4.2], move: [.6, .8], moves: ['in', 'away'], window: [.09, .20, .36] },
 };
 // where the ball is aimed at the stumps before any movement, relative to PITCH_Y
-const LINES = { stumps: [-.06, .06], off: [.55, .68], leg: [-.68, -.55] };
+const LINES = { stumps: [-.06, .06], off: [-.68 * LEG, -.55 * LEG].sort((a, b) => a - b), leg: [.55 * LEG, .68 * LEG].sort((a, b) => a - b) };
 const LINE_ODDS = ['stumps', 'stumps', 'off', 'off', 'leg'];
 const AGAINST_LINE = .85;                          // timing windows shrink by this when you hit against the line
 const GRADES = ['perfect', 'good', 'mistimed', 'miss'];
 // the 8 screen compass directions from the batter, and the same directions in world (x, y)
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const DIR_WORLD = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
-const LEG_SIDE = [0, 1, 2], OFF_SIDE = [4, 5, 6];  // N, NE, E go to leg (-y); S, SW, W go to the off side (+y)
+// right-hander: S, SW, W go to the leg side (+y) and N, NE, E to the off side (-y); a left-hander has them swapped
+const LEG_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG > 0), OFF_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG < 0);
 const CHORD_T = .06;                               // two arrow keys pressed this close together make a diagonal
 const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
 const HOLD_T = .9;                                 // of that, how long everyone holds still (or celebrates) first
@@ -154,8 +160,9 @@ const TEAMS = [
 for (const t of TEAMS) t.legs = t.body.map(v => Math.round(v * .78)); // trousers: the body colour, a shade darker
 const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
 
-const BATTER = { x: 7.55, y: -.55 }; // on the leg side of the stumps line, so the ball passes in front of his pads
+const BATTER = { x: 7.55, y: PITCH_Y + LEG * .25 }; // on the leg side of the stumps line, so the ball passes in front of his pads
 const BOWLER = { x: -6.4, y: -.55 };
+const BOWLER_YAW = 0;                // he runs straight down the pitch, whichever side of it the batter stands
 // the lane's first field: fielders between the eight screen directions from the batter
 const FIELDERS = [
   { name: 'mid-off', x: -1.6, y: 3.9 },
@@ -525,9 +532,9 @@ const facing = (from, to) => Math.atan2(to.y - from.y, to.x - from.x);
 const G = {
   phase: 'pick', time: 0, status: '',
   you: null, rival: null,
-  // the batter stands side-on: chest towards +y (the camera side, the off side), front shoulder to the bowler
+  // the batter stands side-on, front shoulder to the bowler: a right-hander's chest faces -y (his off side), back to the camera
   batter: person(BATTER, 0, Math.PI / 2, POSE_BATTER),
-  bowler: person(BOWLER, 1, facing(BOWLER, BATTER), POSE_BOWLER),
+  bowler: person(BOWLER, 1, BOWLER_YAW, POSE_BOWLER),
   fielders: FIELDERS.map((s, k) => ({ name: s.name, home: { x: s.x, y: s.y }, ...person(s, k + 2, facing(s, BATTER), POSE_FIELDER) })),
   field: 'ring', fieldOrder: FIELD_NAMES, forceField: null,
   // bowling: del is the current delivery (see bowl()), ball is what is drawn, last is the latest ball's result
@@ -580,13 +587,13 @@ function mulberry32(a) {
 let rng = mulberry32(Math.random() * 2 ** 32 >>> 0);
 const range = ([a, b]) => lerp(a, b, rng());
 const pickOne = list => list[Math.floor(rng() * list.length)];
-const lineOf = y => y - PITCH_Y > BOWLED_HALF ? 'off' : y - PITCH_Y < -BOWLED_HALF ? 'leg' : 'stumps';
+const lineOf = y => (y - PITCH_Y) * LEG > BOWLED_HALF ? 'leg' : (y - PITCH_Y) * LEG < -BOWLED_HALF ? 'off' : 'stumps';
 const nextType = () => G.ballInOver >= 6 ? (G.overType === 'fast' ? 'spin' : 'fast') : G.overType;
 
 const walkPose = (rate, step) => { const w = Math.sin(G.time * rate); return { stance: .08 + step * Math.abs(w), armR: w * .5, armL: -w * .5 }; };
 // where the bowler is and how he stands, s seconds after the run-up started
 function bowlerAt(d, s) {
-  const B = BOWLERS[d.type], yaw = facing(BOWLER, BATTER);
+  const B = BOWLERS[d.type], yaw = BOWLER_YAW;
   if (s < d.runT) {
     const x = lerp(d.mark, RELEASE_X, clamp(s / d.runT, 0, 1)), into = s - (d.runT - B.deliver);
     if (into < 0) {
@@ -628,7 +635,7 @@ function bowl(opts = {}) {
   d.t1 = Math.hypot(d.P.x - d.R.x, d.P.y - d.R.y) / B.speed;
   d.vz1 = (BALL_R - d.R.z + GRAVITY * d.t1 * d.t1 / 2) / d.t1;
   // off the pitch it heads for its moved line at the stumps
-  d.end = aim + (move === 'in' ? -amount : move === 'away' ? amount : 0);
+  d.end = aim + (move === 'in' ? LEG * amount : move === 'away' ? -LEG * amount : 0);
   const ex = STUMPS_X - d.P.x, ey = d.end - d.P.y, el = Math.hypot(ex, ey);
   d.u = { x: ex / el, y: ey / el };
   d.v2 = B.speed * B.after;
@@ -1034,7 +1041,7 @@ function update(dt) {
       bw.pose = walkPose(7, .14);
     } else {
       bw.x = mark.x; bw.y = mark.y;
-      bw.yaw = facing(BOWLER, BATTER);
+      bw.yaw = BOWLER_YAW;
       bw.pose = POSE_BOWLER;
       if (d.stage === 'wait' && d.timer <= 0 && G.auto && fieldSet()) bowl();
     }
@@ -1050,11 +1057,14 @@ const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2],
 // the batter waits in a high backlift: the top hand reaches across the chest to a grip by the back hip,
 // and the bat points up behind the back shoulder, clear of the body, so it reads against the paving.
 // A swing brings the bat down through the ball's line in front of him, then follows through towards the shot
+// The figure below is a left-hander (chest to +y); a right-hander is the same figure mirrored across the stumps line
 function drawBatter() {
-  const p = G.batter, k = FIG_SCALE, pose = p.pose;
+  const k = FIG_SCALE, flip = LEG > 0, my = y => flip ? 2 * PITCH_Y - y : y;
+  const p = { ...G.batter, y: my(G.batter.y) }, pose = p.pose;
+  const add = flip ? (a, b, r0, r1, f) => dynamicAdd([a[0], my(a[1]), a[2]], [b[0], my(b[1]), b[2]], r0, r1, f) : dynamicAdd;
   let bone = 0;
   // bones 10 and 11 are the front arm; it is drawn below instead, crossing to the grip
-  figure(p.x, p.y, p.yaw, { scale: k, ...pose }, p.palette, (a, b, r0, r1, f) => { if (bone !== 10 && bone !== 11) dynamicAdd(a, b, r0, r1, f); bone++; });
+  figure(p.x, p.y, p.yaw, { scale: k, ...pose }, p.palette, (a, b, r0, r1, f) => { if (bone !== 10 && bone !== 11) add(a, b, r0, r1, f); bone++; });
   const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), sx = -fy, sy = fx;
   const P = (f, s, z) => [p.x + (fx * f + sx * s) * k, p.y + (fy * f + sy * s) * k, z * k];
   const shZ = 1.28 - pose.crouch * .4 + Math.cos(pose.lean) * .95, shA = -pose.crouch * .15 + Math.sin(pose.lean) * .95;
@@ -1064,9 +1074,9 @@ function drawBatter() {
   if (sw) {
     const s = G.time - sw.t0, back = { grip, dir };
     // down through the line of the ball, just in front of the crease
-    const g1 = P(shA + .3, .55, shZ - .85), d1 = [CONTACT_X - g1[0], sw.lineY - g1[1], .3 - g1[2]];
+    const g1 = P(shA + .3, .55, shZ - .85), d1 = [CONTACT_X - g1[0], my(sw.lineY) - g1[1], .3 - g1[2]];
     // and on up towards the chosen direction
-    const w = DIR_WORLD[sw.dir], n = Math.hypot(w[0], w[1]);
+    const w = [DIR_WORLD[sw.dir][0], flip ? -DIR_WORLD[sw.dir][1] : DIR_WORLD[sw.dir][1]], n = Math.hypot(w[0], w[1]);
     const g2 = [p.x + w[0] / n * .45 * k, p.y + w[1] / n * .45 * k, (shZ - .2) * k], d2 = [w[0] / n, w[1] / n, .9];
     const keys = [[0, back.grip, back.dir], [.07, g1, d1], [.25, g2, d2], [.6, g2, d2], [.9, back.grip, back.dir]];
     for (let i = 1; i < keys.length; i++) {
@@ -1079,12 +1089,12 @@ function drawBatter() {
     }
   }
   const elbow = [lerp(shoulder[0], grip[0], .5) + fx * .3 * k, lerp(shoulder[1], grip[1], .5) + fy * .3 * k, lerp(shoulder[2], grip[2], .5) - .08 * k];
-  dynamicAdd(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
-  dynamicAdd(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
+  add(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
+  add(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
   const len = Math.hypot(...dir);
   const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, Math.max(.05, grip[2] + dir[2] / len * d * k)];
-  dynamicAdd(at(-.05), at(.36), .06 * k, .06 * k, () => GRIP);
-  dynamicAdd(at(.4), at(1.22), .15 * k, .15 * k, () => BLADE);
+  add(at(-.05), at(.36), .06 * k, .06 * k, () => GRIP);
+  add(at(.4), at(1.22), .15 * k, .15 * k, () => BLADE);
 }
 // the batter's stumps are a stack of bricks, staggered like a gully wicket. Bowled, they topple back off the stack:
 // the higher a brick sat, the further it goes
@@ -1131,7 +1141,7 @@ function drawMarker(d) {
   drawDots(ring, SIGNAL);
   drawDots([[p.sx, p.sy], [p.sx - 1, p.sy], [p.sx + 1, p.sy], [p.sx, p.sy - 1], [p.sx, p.sy + 1]], SIGNAL);
   if (d.move === 'none') return;
-  const q = project(d.P.x, d.P.y + (d.move === 'in' ? -1 : 1), 0);
+  const q = project(d.P.x, d.P.y + Math.sign(d.end - d.aim), 0);
   let ux = q.sx - p.sx, uy = q.sy - p.sy;
   const n = Math.hypot(ux, uy);
   ux /= n; uy /= n;
