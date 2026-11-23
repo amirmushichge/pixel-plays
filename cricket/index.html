@@ -2524,8 +2524,12 @@ function sfx(kind, amount = 1) {
     glide(now, 150, 70, .12, .2, 'triangle');
     for (let k = 0; k < 6; k++) {
       const at = now + .02 + k * jit(.05, .09);
+      // each brick a stony clack: a click and a hard, short ring at one pitch, over grit
+      const f = jit(1100, 1900);
       hiss(at, .05, jit(.06, .12), jit(900, 1700), 2);
-      glide(at, jit(500, 800), jit(250, 400), .04, .05, 'square');
+      knock(at, .004, jit(.25, .4), jit(3000, 4200), .8);
+      glide(at, f * 1.02, f, .03, jit(.04, .07), 'sine', .001);
+      glide(at, f * 2.76, f * 2.7, .015, .02, 'sine', .001);
     }
   } else if (kind === 'cheer') {
     // a few kids: rising "yay"s with a wobble, over a breathy roar
