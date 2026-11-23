@@ -197,7 +197,7 @@ const FIELDS = {
   ring: [spot('midwicket', 5.5, 5.2), spot('cover', .5, 5), spot('point', 1.5, 4.6), { ...CORNER }],  // in the gaps
   off: [spot('mid-off', 0, 5.6), spot('cover', 1, 4.8), spot('point', 2, 4.6), spot('square', 5, 5.3)],
   leg: [{ ...CORNER }, spot('square leg', 5, 5.3), spot('midwicket', 6, 5.4), spot('cover', 1, 5)],
-  deep: [spot('long-on', 6.6, 7.6), spot('long-off', .4, 7.4), { ...FINE }, { ...CORNER }],
+  deep: [spot('long-on', 6.8, 14.8), spot('long-off', .4, 7.4), { ...FINE }, { ...CORNER }],
 };
 const FIELDERS = FIELDS.ring;                      // the field the lane starts with
 const FIELD_NAMES = Object.keys(FIELDS);
@@ -209,6 +209,10 @@ const REACT = .3, RUN_SPEED = 4.6, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
 // a ball that has not touched the ground, a wall or a prop is caught if it comes within CATCH_R of a fielder below
 // CATCH_Z (hands above the head). Anything that has touched something first is only fielded: clean catches only
 const CATCH_R = .7, CATCH_Z = 2.4;
+/* the bowler is the fifth fielder, but he finishes his follow-through off balance right on the straight hit's line,
+   so he only takes a return catch that comes to him, close and below the waist; anything higher or wider goes past */
+const BOWLER_CATCH_R = .4, BOWLER_CATCH_Z = 1.1;
+const BOWLER_HOT = 7;                              // a ball still going faster than this is past him before he can get down to it
 const RUN_DIST = [4, 6, 8.5];
 /* what a loose ball can hit besides the walls: upright drums (x, y, r, h) and boxes (x0, y0, x1, y1, h), matching
    the baked props. A ball above a prop's top lands on it. Plant leaves, the washing and the meter box don't count.
@@ -1095,17 +1099,17 @@ function stepBall(b, dt) {
    reached first beats them all. If the chase somehow falls through, it is planned again from where things are. */
 const team = () => [G.bowler, ...G.fielders];
 const canCatch = b => !b.touched && b.z <= CATCH_Z;
-const canGather = b => b.touched ? b.z <= GATHER_Z : b.z <= CATCH_Z;
-const reachOf = b => b.touched ? GATHER_R : CATCH_R;
+const canGather = (b, f) => f === G.bowler && Math.hypot(b.vx, b.vy, b.vz) > BOWLER_HOT ? false
+  : b.touched ? b.z <= GATHER_Z : b.z <= (f === G.bowler ? BOWLER_CATCH_Z : CATCH_Z);
+const reachOf = (b, f) => b.touched ? GATHER_R : f === G.bowler ? BOWLER_CATCH_R : CATCH_R;
 function planChase(ball, react) {
   const sim = { ...ball }, players = team();
   while (sim.t < LIVE_MAX) {
     stepBall(sim, PHYS_DT);
     if (sim.event || sim.gone) break;
-    if (canGather(sim)) {
-      const reach = Math.max(0, sim.t - ball.t - react) * RUN_SPEED + reachOf(sim);
-      for (const f of players) if (Math.hypot(f.x - sim.x, f.y - sim.y) <= reach) return { f, t: sim.t, x: sim.x, y: sim.y };
-    }
+    const run = Math.max(0, sim.t - ball.t - react) * RUN_SPEED;
+    // (the bowler cannot run for a catch: he only takes one that comes to him; once it lands he chases like anyone)
+    for (const f of players) if (canGather(sim, f) && Math.hypot(f.x - sim.x, f.y - sim.y) <= (f === G.bowler && !sim.touched ? 0 : run) + reachOf(sim, f)) return { f, t: sim.t, x: sim.x, y: sim.y };
     if (sim.still) break;
   }
   // nobody gets there in time: the nearest runs to where the ball ends up (it may be a boundary)
@@ -1125,8 +1129,7 @@ function stepFielders(d, dt) {
 }
 // the fielder who can reach the ball now, if any
 function gatherer(b) {
-  if (!canGather(b)) return null;
-  for (const f of team()) if (Math.hypot(f.x - b.x, f.y - b.y) <= reachOf(b)) return f;
+  for (const f of team()) if (canGather(b, f) && Math.hypot(f.x - b.x, f.y - b.y) <= reachOf(b, f)) return f;
   return null;
 }
 const runsFor = dist => RUN_DIST.findIndex(r => dist < r) < 0 ? 3 : RUN_DIST.findIndex(r => dist < r);
@@ -2062,7 +2065,7 @@ const LANE = {
   WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
-const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
+const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, BOWLER_CATCH_R, BOWLER_CATCH_Z, BOWLER_HOT, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
 const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
 const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
 // test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
