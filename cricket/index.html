@@ -217,7 +217,7 @@ const BOWLER = { x: -6.4, y: -.55 };
 const BOWLER_YAW = 0;                // he runs straight down the pitch, whichever side of it the batter stands
 /* field placings, one per over in a shuffled order, so the gaps move. Spots are given as [direction, distance]
    from the batter: the direction is an index into DIRS (fractions sit between two shot directions). The bowler is
-   the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW).
+   the sixth fielder, wherever his follow-through leaves him, and covers the straight hit (NW).
    The field is spread round the bat so the gaps are narrow: fielders stand 4.5 to 7 out, each on a shot's line or
    between two, where he can cut off a hit along the ground and a lofted hit is still low enough to catch. (Deeper
    is no harder: a fielder on the boundary only guards his own line.) The four placings guard different lines, so
@@ -235,29 +235,32 @@ const spot = (name, k, r) => {
 const CORNER = { name: 'deep corner', x: CHALK_X - .55, y: CHALK_Y - .6 };
 const FINE = { name: 'fine', x: 11.1, y: -2 };   // on the glance's line (the same for either HAND), beyond the drum
 const FIELDS = {
-  // round the bat: N to E covered from between the lines, the glance, and SW
-  ring: [spot(byHand('cover point', 'midwicket'), .5, 4.5), spot(byHand('backward point', 'backward square'), 1.5, 4.5), { ...FINE }, spot(byHand('square leg', 'point'), 5, 6)],
-  // N, NE and E packed (the off side for a right-hander, the leg side for a left-hander), and the corner
-  [byHand('off', 'leg')]: [spot(byHand('mid-off', 'mid-on'), -.1, 5.2), spot(byHand('cover', 'midwicket'), .6, 4.5), spot(byHand('backward point', 'backward square'), 1.6, 4.4), { ...CORNER }],
-  // S, SW and W packed (the leg side for a right-hander, the off side for a left-hander), and NE
-  [byHand('leg', 'off')]: [{ ...CORNER }, spot(byHand('square leg', 'point'), 4.85, 6.1), spot(byHand('deep midwicket', 'deep cover'), 6, 7), spot(byHand('point', 'square leg'), 1, 4.5)],
-  // back on the boundaries: deep N, long down the lane, the corner and the glance
-  deep: [spot(byHand('deep cover', 'deep midwicket'), 0, 6.5), spot(byHand('long-on', 'long-off'), 6.8, 14.8), { ...CORNER }, { ...FINE }],
+  // round the bat: N to E covered from between the lines, the glance, SW and W
+  ring: [spot(byHand('cover point', 'midwicket'), .5, 4.5), spot(byHand('backward point', 'backward square'), 1.5, 4.5), { ...FINE }, spot(byHand('square leg', 'point'), 5, 6), spot(byHand('deep midwicket', 'deep cover'), 6, 6.5)],
+  // N, NE and E packed (the off side for a right-hander, the leg side for a left-hander), the corner and SW/W
+  [byHand('off', 'leg')]: [spot(byHand('mid-off', 'mid-on'), -.1, 5.2), spot(byHand('cover', 'midwicket'), .6, 4.5), spot(byHand('backward point', 'backward square'), 1.6, 4.4), { ...CORNER }, spot(byHand('deep midwicket', 'deep cover'), 6.3, 6.75)],
+  // S, SW and W packed (the leg side for a right-hander, the off side for a left-hander), NE and deep E
+  [byHand('leg', 'off')]: [{ ...CORNER }, spot(byHand('square leg', 'point'), 4.85, 6.1), spot(byHand('deep midwicket', 'deep cover'), 6, 7), spot(byHand('point', 'square leg'), 1, 4.5), spot(byHand('deep backward point', 'deep backward square'), 2, 6)],
+  // back on the boundaries: deep N, long down the lane, the corner, the glance and deep SW
+  deep: [spot(byHand('deep cover', 'deep midwicket'), 0, 6.5), spot(byHand('long-on', 'long-off'), 6.8, 14.8), { ...CORNER }, { ...FINE }, spot(byHand('deep square leg', 'deep point'), 5.4, 6.8)],
 };
 const FIELDERS = FIELDS.ring;                      // the field the lane starts with
 const FIELD_NAMES = Object.keys(FIELDS);
 const FIELD_BOUNDS = { x0: WALL_X + 1.4, x1: CHALK_X - .45, y0: WALL_Y + 1.3, y1: CHALK_Y - .45 };
 /* fielding: after REACT seconds the chosen fielder runs at RUN_SPEED to where he can first reach the ball; he
    gathers a ball within GATHER_R of him and below GATHER_Z (chest height). Runs go by how far from the bat he
-   gathered it: nearer than RUN_DIST[0] is no run, then 1, 2, and 3 beyond RUN_DIST[2] */
-const REACT = .3, RUN_SPEED = 4.6, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
+   gathered it: nearer than RUN_DIST[0] is no run, then 1, 2, and 3 beyond RUN_DIST[2]. Running for a catch he is
+   a little slower off the mark and across the ground (CATCH_REACT, CATCH_RUN: he has to watch it down), so the
+   quicker fielding cuts off ground shots without making every lofted hit a chance */
+const REACT = .25, RUN_SPEED = 5, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
+const CATCH_REACT = .3, CATCH_RUN = 4.6;
 // a ball that has not touched the ground, a wall or a prop is caught if it comes within CATCH_R of a fielder below
 // CATCH_Z (a stretch and a jump above the head). Anything that has touched something first is only fielded: clean catches only
 const CATCH_R = .85, CATCH_Z = 2.7;
 // a ball still flying faster than CATCH_HOT when it reaches a fielder's hands is a hard chance: held only 85% of the
 // time (DROP). A drop is fielded where it fell, so a hit straight at a deep fielder is a gamble and not a sure out
 const CATCH_HOT = 10, DROP = .15;
-/* the bowler is the fifth fielder, but he finishes his follow-through off balance right on the straight hit's line,
+/* the bowler is the sixth fielder, but he finishes his follow-through off balance right on the straight hit's line,
    so he only takes a return catch that comes to him, close and below the waist; anything higher or wider goes past */
 const BOWLER_CATCH_R = .4, BOWLER_CATCH_Z = 1.1;
 const BOWLER_HOT = 7;                              // a ball still going faster than this is past him before he can get down to it
@@ -1198,9 +1201,9 @@ function planChase(ball, react) {
   while (sim.t < LIVE_MAX) {
     stepBall(sim, PHYS_DT);
     if (sim.event || sim.gone) break;
-    const run = Math.max(0, sim.t - ball.t - react) * RUN_SPEED;
+    const air = !sim.touched, run = air ? Math.max(0, sim.t - ball.t - react * CATCH_REACT / REACT) * CATCH_RUN : Math.max(0, sim.t - ball.t - react) * RUN_SPEED;
     // (the bowler cannot run for a catch: he only takes one that comes to him; once it lands he chases like anyone)
-    for (const f of players) if (canGather(sim, f) && Math.hypot(f.x - sim.x, f.y - sim.y) <= (f === G.bowler && !sim.touched ? 0 : run) + reachOf(sim, f)) return { f, t: sim.t, x: sim.x, y: sim.y };
+    for (const f of players) if (canGather(sim, f) && Math.hypot(f.x - sim.x, f.y - sim.y) <= (f === G.bowler && air ? 0 : run) + reachOf(sim, f)) return { f, t: sim.t, x: sim.x, y: sim.y, air, react };
     if (sim.still) break;
   }
   // nobody gets there in time: the nearest runs to where the ball ends up (it may be a boundary)
@@ -1211,8 +1214,8 @@ const RUN_POSE = { lean: .3 };
 function stepFielders(d, dt) {
   const b = G.ball, c = d.chase;
   for (const f of team()) {
-    if (f === c.f && b.t - d.tReact >= 0) {
-      const dx = c.x - f.x, dy = c.y - f.y, gap = Math.hypot(dx, dy), go = Math.min(gap, RUN_SPEED * dt);
+    if (f === c.f && b.t - d.tReact - (c.air ? c.react * (CATCH_REACT / REACT - 1) : 0) >= 0) {
+      const dx = c.x - f.x, dy = c.y - f.y, gap = Math.hypot(dx, dy), go = Math.min(gap, (c.air ? CATCH_RUN : RUN_SPEED) * dt);
       if (gap > 1e-6) { f.x += dx / gap * go; f.y += dy / gap * go; f.yaw = Math.atan2(dy, dx); }
       f.running = gap > .02;
     } else if (f !== G.bowler || b.t > .3) f.yaw = facing(f, b);
@@ -1532,7 +1535,7 @@ function walkFielders(dt) {
    - tie: nobody celebrates. A shrug from the batter and the bowler, and a stand-off.
    With reduced motion nobody runs or jumps: each figure eases straight into its held pose. This is drawing only:
    it never touches the ball, the score or the clock, and the next match (or a tap on the result) resets it */
-const CELE = { run: 5.8, walk: 1.6, ring: 1.15, huddle: 1.05, air: .34, crouch: .16, jumpH: .3 };
+const CELE = { run: 5.8, walk: 1.6, ring: 1.38, huddle: 1.26, air: .34, crouch: .16, jumpH: .3 };
 const CELE_KIDS = 2.6;                             // how long the kids jump about after a win, before they stand cheering
 const planted = (x, y, toe) => ({ t0: -1e9, t1: 1e9, x, y, toe, lift: 0 });
 const lastPlant = list => list[list.length - 1];
@@ -1731,7 +1734,7 @@ const pathLen = pts => pts.reduce((a, p, i) => i ? a + Math.hypot(p.x - pts[i - 
 
 // a win or a tie: the fielding side stays put (out of the batter's way) and takes it in
 function standCele(C, bwFrom, bwPos, froms) {
-  const win = C.kind === 'win', kinds = win ? ['hips', 'knees', 'head', 'hips'] : ['hips', 'hang', 'hips', 'hang'];
+  const win = C.kind === 'win', kinds = win ? ['hips', 'knees', 'head', 'hips', 'knees'] : ['hips', 'hang', 'hips', 'hang', 'hips'];
   const all = [[G.bowler, actor(C.bowlerT0, bwFrom), bwPos, win ? 'head' : 'shrug'], ...G.fielders.map((f, k) => [f, actor(C.t0, froms[k]), f, kinds[k]])];
   all.forEach(([p, A, pos, kind], k) => {
     let yaw = Math.atan2(BATTER.y - pos.y, BATTER.x - pos.x), t1 = 0;
@@ -1772,7 +1775,7 @@ function takeIn(A, yaw, kind, t1, win) {
 function huddlePlan(bwPos) {
   const fs = G.fielders, cx = fs.reduce((a, f) => a + f.x, 0) / fs.length, cy = fs.reduce((a, f) => a + f.y, 0) / fs.length;
   const n = Math.hypot(cx - bwPos.x, cy - bwPos.y) || 1, a0 = Math.atan2(bwPos.y - cy, bwPos.x - cx);
-  const ring = (c, r) => [0, 1, 2, 3, 4].map(i => ({ x: c.x + Math.cos(a0 + i * 1.2566) * r, y: c.y + Math.sin(a0 + i * 1.2566) * r }));
+  const places = fs.length + 1, ring = (c, r) => Array.from({ length: places }, (_, i) => ({ x: c.x + Math.cos(a0 + i * 2 * Math.PI / places) * r, y: c.y + Math.sin(a0 + i * 2 * Math.PI / places) * r }));
   const B = FIELD_BOUNDS, ok = c => ring(c, CELE.ring).every(p => p.x > B.x0 && p.x < B.x1 && p.y > B.y0 && p.y < B.y1 && clearAround(p.x, p.y));
   let c = { x: bwPos.x + (cx - bwPos.x) / n * CELE.ring, y: bwPos.y + (cy - bwPos.y) / n * CELE.ring };
   for (let i = 0; i < 40 && !ok(c); i++) {
@@ -1780,11 +1783,11 @@ function huddlePlan(bwPos) {
     c = { x: clamp(c.x + dx / m * .3, B.x0 + 1.2, B.x1 - 1.2), y: clamp(c.y + dy / m * .3, B.y0 + 1.2, B.y1 - 1.2) };
     if (i % 8 === 7) c.x -= .5;   // pinned in a corner: work along the lane, away from the bat
   }
-  // the bowler takes the place nearest him; the fielders share the other four the shortest way
+  // the bowler takes the place nearest him; the fielders share the others the shortest way
   const spots = ring(c, CELE.ring);
   let best = null;
   const perms = a => a.length < 2 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map(r => [x, ...r]));
-  for (const p of perms([1, 2, 3, 4])) {
+  for (const p of perms(fs.map((f, i) => i + 1))) {
     const cost = p.reduce((a, j, i) => a + Math.hypot(spots[j].x - fs[i].x, spots[j].y - fs[i].y) ** 2, 0);
     if (!best || cost < best.cost) best = { cost, p };
   }
@@ -1827,7 +1830,7 @@ function cheer(A, yaw) {
   };
 }
 // the held pose: a loose ring facing in, upright, fists up at a slightly different height each, so at 1x every
-// figure keeps his own head and arms instead of the five merging into one lump
+// figure keeps his own head and arms instead of the six merging into one lump
 function huddle(A, hud) {
   const lift = [.86, .72, .8, .68, .76][A.slot];
   return (s, fL, fR) => {
@@ -2836,7 +2839,7 @@ const LANE = {
   WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
-const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, BOWLER_CATCH_R, BOWLER_CATCH_Z, BOWLER_HOT, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
+const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, CATCH_REACT, CATCH_RUN, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, BOWLER_CATCH_R, BOWLER_CATCH_Z, BOWLER_HOT, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
 const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, STRAIGHT, DONE_T };
 const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
 // test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
