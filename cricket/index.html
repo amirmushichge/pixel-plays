@@ -24,7 +24,7 @@
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="c" tabindex="0" aria-label="Cricket ground. You bat at the far end; the bowler runs in from the near end."></canvas></div>
+<div id="stage"><canvas id="c" tabindex="0" aria-label="Gully cricket in a lane between two houses. You bat at the near end; the bowler runs in from the far end."></canvas></div>
 <div id="scores">
   <div class="team" id="you"><b id="runs">0/0</b><span id="overs">0.0 ov</span></div>
   <div class="team" id="rival"><span id="target"></span></div>
@@ -45,144 +45,316 @@ PixelPlays.mount({
   ],
 });
 </script>
-<script>window.PP_SCENE = { originY: 4, shadowX: .9, shadowY: -.6 };</script>
+<script>window.PP_SCENE = { originY: 17, shadowX: .9, shadowY: -.6 };</script>
 <script src="../engine.js"></script>
 <script>
 'use strict';
 
 /* ---------- constants ----------
-   Field coordinates: u runs screen-right, v runs screen-down (towards the camera), both in world units.
-   The pitch lies along v, so the batter at the far (top) end faces the camera and the bowler runs up-screen. */
-const toWorld = (u, v) => ({ x: (u + v) / R2, y: (v - u) / R2 });
-const yawTo = (du, dv) => Math.atan2(dv - du, du + dv); // figure yaw that faces field direction (du, dv)
+   Everything is laid out on the engine's world axes (x runs screen down-right, y runs screen down-left).
+   The pitch lies along x at y = PITCH_Y. The batter stands at the near end (+x) facing the camera side-on;
+   the bowler runs in from the far end (-x), so the ball travels down-right towards the batter.
+   House fronts stand on the two far sides: x = WALL_X (left on screen) and y = WALL_Y (right on screen). */
+const WALL_X = -12.6, WALL_Y = -7.6, HOUSE_D = 1.9;          // house faces and their depth behind the face
+const WALL_H_LEFT = 4.2, WALL_H_BACK = 4.2, PARAPET = .35;     // wall heights; a parapet sits on top of each
+const EDGE_X = 13.4, EDGE_Y = 7.5;                             // the near sides fade out into white past these
+const CHALK_X = 11.6, CHALK_Y = 5.9;                           // chalk boundary along the two open near sides
+const PATH_W = 1.1;                                            // concrete footpath along the house fronts
+const PITCH_Y = -.3;
+const CREASE_X = 7.1, STUMPS_X = 8.5, BOWL_LINE_X = -3.9, BRICK_X = -4.5;
+const BACKSTOP = { x: 10.5, y: -.7, r: .44, h: 1.05 };
+const BRICK = { w: .22, l: .5, h: .17 };                        // one brick: w along x, l along y
+const STUMP_BRICKS = 4, STUMPS_Z = STUMP_BRICKS * BRICK.h;      // the stack's height
+const FIG_SCALE = 1;
 
-const ISLAND_U = 17, ISLAND_V = 23.4, ROPE_U = 13.6, ROPE_V = 19.2;
-const PITCH_U = 1.5, PITCH_V = 7.6, STUMPS_V = 6.2, POPPING_V = 5, RETURN_U = 1.25;
-const STUMP_GAP = .24, STUMP_Z = .9, STUMP_R = .05;
-const FIG_SCALE = .9;
-const BAT_END = -1, BOWL_END = 1; // sign of v at each end: the batter's stumps are at v = -STUMPS_V
-
-const SKIN = [[222, 170, 132], [196, 146, 110], [170, 120, 88], [128, 88, 64], [214, 164, 128]];
-const HAIR = [[38, 28, 24], [60, 44, 34], [120, 92, 60], [30, 26, 24], [92, 62, 40]];
+const SKIN = [[222, 170, 132], [196, 146, 110], [170, 120, 88], [128, 88, 64], [150, 104, 74], [214, 164, 128]];
+const HAIR = [[38, 28, 24], [30, 26, 24], [60, 44, 34], [24, 22, 22], [52, 40, 32], [36, 30, 28]];
 // placeholder kits until the team kits land
-const KIT_BAT = { shirt: [58, 92, 150], stripe: [58, 92, 150], legs: [58, 92, 150] };
-const KIT_FIELD = { shirt: [70, 128, 92], stripe: [70, 128, 92], legs: [70, 128, 92] };
-const HELMET = [34, 42, 66], PADS = [232, 228, 216];
-const BLADE = [246, 226, 170], GRIP = [44, 44, 48], GLOVE = [236, 232, 220];
-const STUMP = [252, 246, 226], BAIL = [214, 176, 112];
+const KIT_BAT = { shirt: [44, 96, 186], stripe: [44, 96, 186], legs: [36, 62, 118] };
+const KIT_FIELD = { shirt: [84, 140, 96], stripe: [84, 140, 96], legs: [64, 92, 72] };
+const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
 
-// roles in field coordinates; the six fielders leave every screen direction from the batter open
-const SPOTS = {
-  batter: { u: .8, v: -5.2 },
-  keeper: { u: -.5, v: -8.4 },
-  bowler: { u: -.8, v: 10.2 },
-  fielders: [
-    { name: 'point', u: -8.6, v: -5.4 },
-    { name: 'cover', u: -8.4, v: 2.6 },
-    { name: 'mid-off', u: -3.8, v: 11.2 },
-    { name: 'mid-on', u: 3.8, v: 11.2 },
-    { name: 'midwicket', u: 8.6, v: 1.2 },
-    { name: 'fine leg', u: 7.2, v: -13.2 },
-  ],
-};
+const BATTER = { x: 7.55, y: .15 };
+const BOWLER = { x: -6.4, y: -.55 };
+// fielders sit between the eight screen directions from the batter, so every shot direction is open floor
+const FIELDERS = [
+  { name: 'mid-off', x: -1.6, y: 3.9 },
+  { name: 'cover', x: 4.6, y: 4.4 },
+  { name: 'mid-on', x: -.7, y: -4.1 },
+  { name: 'square leg', x: 9.4, y: -4.9 },
+];
 
-const FIELD_TONES = [[78, 116, 56], [85, 123, 59], [92, 130, 62], [99, 137, 65]];
-const PITCH_TONES = [[186, 168, 116], [194, 176, 122], [202, 184, 128], [210, 192, 134]];
-const ROPE = [238, 234, 220], LINE = rgb(248, 244, 232);
-const KIND_FIELD = 1, KIND_PITCH = 2;
+const ASPHALT = [[118, 112, 112], [124, 118, 117], [130, 124, 122], [136, 130, 127]];
+const PATCH = [[102, 98, 102], [107, 103, 106], [112, 108, 110], [117, 113, 114]];
+const SLAB = [[168, 158, 142], [175, 165, 148], [182, 172, 154], [189, 179, 160]];
+const EARTH = [138, 112, 84], CHALK = rgb(246, 244, 236), CHALK_DIM = rgb(214, 210, 204);
+const PLASTER_A = [226, 196, 140], PLASTER_C = [222, 178, 170], PLASTER_D = [176, 204, 186], BRICKWORK = [166, 82, 60], MORTAR = [196, 178, 156];
+const SHUTTER = [62, 116, 104], DOOR_BLUE = [58, 96, 150], DOOR_WOOD = [130, 84, 52], GLASS = [44, 42, 56], STONE = [196, 186, 166];
+const ROOF = [178, 170, 158], RIM = [222, 214, 198];
+const POT = [176, 92, 62], POT_LEAF = [[64, 108, 60], [92, 132, 70], [124, 156, 82]];
+const KIND_ROAD = 1, KIND_PATH = 2;
 
 /* ---------- bake ---------- */
+function chalky(i, fine) { return fine > .16 ? (fine > .8 ? CHALK_DIM : CHALK) : 0; }
 function groundColor(x, y, ix, iy, i) {
-  const u = (x - y) / R2, v = (x + y) / R2;
-  const edge = Math.hypot(u / ISLAND_U, v / ISLAND_V);
-  const rough = edge + (noise(x * 1.3, y * 1.3) - .5) * .1;
-  if (rough > 1.04) return 0;
-  if (rough > .94 && hash(ix, iy) < (rough - .94) / .1) return 0;
-  const fine = hash(ix, iy), au = Math.abs(u), av = Math.abs(v);
-  if (au <= PITCH_U && av <= PITCH_V) {
-    kinds[i] = KIND_PITCH;
-    // creases are 1px lines: constant-v lines need about .1 units because v is squashed by half on screen
-    const popping = Math.abs(av - POPPING_V) < .11;
-    const bowling = Math.abs(av - STUMPS_V) < .11 && au <= RETURN_U;
-    const ret = Math.abs(au - RETURN_U) < .06 && av >= POPPING_V && av <= STUMPS_V + .7;
-    if ((popping || bowling || ret) && fine > .06) return LINE;
-    // the ends wear darker where the bowlers land and the batters stand
-    const wear = Math.max(0, 1 - Math.abs(av - 3.6) / 1.8) * Math.max(0, 1 - au / 1.1) * .4;
-    const t = .58 + (noise(u * 2, v * .8) - .5) * .5 - wear + Math.sin(v * 3 + noise(u, v) * 2) * .04;
-    if (fine > .99) return rgb(...PITCH_TONES[0]);
-    return rgb(...PITCH_TONES[clamp(Math.floor(t * 4 + (bayerAt(ix, iy) - .5) * .6), 0, 3)]);
+  if (x < WALL_X || y < WALL_Y) return 0;
+  // only the two near sides dissolve: a ragged, dithered edge into the white page
+  const out = Math.max(x - EDGE_X, y - EDGE_Y) + (noise(x * 1.1, y * 1.1) - .5) * 1.3;
+  const fine = hash(ix, iy);
+  if (out > .9) return 0;
+  if (out > -.5 && fine < (out + .5) / 1.4) return 0;
+  if (out > -1.1) {
+    // a crumbling verge of earth and weeds where the paving gives out
+    kinds[i] = KIND_GRASS;
+    const t = noise(x * 2, y * 2) * .9 + (fine - .5) * .4;
+    if (t > .55) return rgb(...GRASS[clamp(Math.floor(t * 3), 1, 3)]);
+    return rampOf(EARTH)[clamp(Math.floor(2 + t * 2 + (bayerAt(ix, iy) - .5) * .8), 1, 3)];
   }
-  if (Math.hypot(u / ROPE_U, v / ROPE_V) < 1.02) {
-    kinds[i] = KIND_FIELD;
-    // mown bands across the pitch, in neighbouring tones so the dither never reads as a checkerboard
-    const band = Math.floor((v + 40) / 2.8) % 2;
-    const t = (band ? .62 : .38) + (noise(u * .5, v * .5) - .5) * .35 + (fine - .5) * .12;
-    return rgb(...FIELD_TONES[clamp(Math.floor(t * 4 + (bayerAt(ix, iy) - .5) * .5), 0, 3)]);
+  const ax = x - WALL_X, ay = y - WALL_Y;
+  if (ax < PATH_W || ay < PATH_W) {
+    kinds[i] = KIND_PATH;
+    if (ax < .22 || ay < .22) {
+      // weeds at the foot of the walls
+      if (noise(x * 1.7, y * 1.7) > .5) kinds[i] = KIND_GRASS;
+      return rgb(...SLAB[0]);
+    }
+    if (Math.abs(ax - PATH_W) < .08 && ay > PATH_W - .08 || Math.abs(ay - PATH_W) < .08 && ax > PATH_W - .08) return rgb(...PATCH[1]); // kerb edge
+    const along = ax < PATH_W ? y : x, joint = (along + 40) % 1.4 < .07;
+    if (joint) return rgb(...SLAB[0]);
+    const t = .5 + (hash(Math.floor((along + 40) / 1.4), ax < PATH_W ? 1 : 2) - .5) * .5 + (noise(x * 1.4, y * 1.4) - .5) * .35;
+    return rgb(...SLAB[clamp(Math.floor(t * 4 + (bayerAt(ix, iy) - .5) * .5), 0, 3)]);
   }
-  kinds[i] = KIND_GRASS;
-  const t = noise(x * .9, y * .9) * 1.15 + (fine - .5) * .55 - .08;
-  return rgb(...GRASS[clamp(Math.floor(t * 4.2), 0, 3)]);
+  kinds[i] = KIND_ROAD;
+  // chalk: the batter's crease, the bowler's line, and the boundary along the open sides
+  const py = Math.abs(y - PITCH_Y);
+  if (Math.abs(x - CREASE_X) < .085 && py < 1.6) { const c = chalky(i, fine); if (c) return c; }
+  if (Math.abs(x - BOWL_LINE_X) < .085 && py < 1.3) { const c = chalky(i, fine); if (c) return c; }
+  if (Math.abs(x - CHALK_X) < .085 && y < CHALK_Y + .05 || Math.abs(y - CHALK_Y) < .085 && x < CHALK_X + .05) {
+    const c = chalky(i, fine * (noise(x * 3, y * 3) > .2 ? 1 : .3)); if (c) return c;
+  }
+  // a scrawled hopscotch-style score box beside the drain
+  const dx = x - 1.6, dy = y - 4.6;
+  if (Math.abs(dx) < .6 && Math.abs(dy) < .6 && (Math.abs(Math.abs(dx) - .55) < .07 || Math.abs(Math.abs(dy) - .55) < .07)) return null;
+  // iron drain cover
+  if (Math.abs(dx) < .45 && Math.abs(dy) < .45) {
+    const rim = Math.abs(dx) > .36 || Math.abs(dy) > .36, slot = (dx + 40) % .18 < .07;
+    return rampOf([84, 80, 86])[rim ? 3 : slot ? 0 : 2];
+  }
+  // a chalk hopscotch grid off to the side of the bowler's end
+  const hx = x + 9.6, hy = y - 3.6;
+  if (hx > -.5 && hx < 3.1 && Math.abs(hy) < .5) {
+    const cell = (hx + .5) / .9, edge = Math.abs(cell - Math.round(cell)) * .9 < .06 || Math.abs(Math.abs(hy) - .45) < .06;
+    if (edge && fine > .25) return CHALK_DIM;
+  }
+  // a few fallen leaves blown in from the trees
+  if (hash(ix * 5 + 1, iy * 3) > .996 && (x < -6 || y < -5)) return rgb(...(fine > .5 ? [168, 132, 62] : [120, 128, 64]));
+  // cracks with weeds growing in them
+  const crack = Math.abs(noise(x * .45 + 11, y * .45 + 3) - .5);
+  if (crack < .014 && noise(x * .3 + 5, y * .3) > .42) {
+    if (fine < .2) kinds[i] = KIND_GRASS;
+    return rgb(...PATCH[0]);
+  }
+  // patches of newer, darker tarmac in a few cells
+  const cx = Math.floor((x + 40) / 3.2), cy = Math.floor((y + 40) / 2.6);
+  const fx = (x + 40) / 3.2 - cx, fy = (y + 40) / 2.6 - cy;
+  const patched = hash(cx, cy) > .76 && fx > .15 && fx < .15 + hash(cx, cy + 9) * .7 && fy > .2 && fy < .85;
+  // the strip down the pitch is worn smooth and pale
+  const wear = Math.max(0, 1 - py / 1.3) * (x > BOWL_LINE_X - 1 && x < STUMPS_X + .5 ? .45 : 0);
+  const t = .48 + (noise(x * .35, y * .35) - .5) * .55 + (fine - .5) * .14 + wear;
+  if (fine > .992) return rgb(...ASPHALT[3]);
+  return rgb(...(patched ? PATCH : ASPHALT)[clamp(Math.floor(t * 4 + (bayerAt(ix, iy) - .5) * .5), 0, 3)]);
 }
-// a flat board facing the camera, running along u at depth v
-function board(u0, u1, v, z0, z1, c) {
-  const ramp = rampOf(c);
-  for (let u = u0; u <= u1; u += .035) for (let z = z0; z <= z1; z += .035) {
-    const top = z > z1 - .1;
-    const tone = top ? 4 : 3 - (noise(u * 3, z * 6) > .8 ? 1 : 0);
-    const p = toWorld(u, v);
-    plot(p.x, p.y, z, ramp[tone]);
+// colour functions for a wall face, given position a along the wall and height z
+function plaster(color, stain = 0) {
+  const ramp = rampOf(color);
+  return (a, z, base) => {
+    let tone = base;
+    if (noise(a * .6 + stain, z * .9) > .79) tone -= 1;            // weathered blotches
+    if (z < .55 + noise(a * 1.4 + stain, 3) * .35) tone -= 1;      // damp line along the foot
+    return ramp[clamp(tone, 0, 4)];
+  };
+}
+function brickwork(a, z, base) {
+  const fz = z / .34, course = Math.floor(fz), fa = a / .72 + (course % 2) * .5, block = Math.floor(fa);
+  if (fz - course < .3 || fa - block < .14) return rampOf(MORTAR)[clamp(base - 1, 0, 4)];
+  return rampOf(BRICKWORK)[clamp(base + (hash(block, course) > .75 ? 1 : 0) - (hash(block, course + 50) > .85 ? 1 : 0), 0, 4)];
+}
+// paint a rectangle on a wall face. side 'y' is the face at y = at (a runs along x); side 'x' is the face at x = at (a runs along y)
+function paint(side, at, a0, a1, z0, z1, colorAt, base) {
+  const step = .045;
+  for (let a = a0; a <= a1; a += step) for (let z = z0; z <= z1; z += step) {
+    const c = colorAt(a, z, base);
+    if (c == null) continue;
+    if (side === 'y') plot(a, at, z, c); else plot(at, a, z, c);
   }
 }
-function post(u, v, z, c) {
-  const p = toWorld(u, v);
-  capsule([p.x, p.y, 0], [p.x, p.y, z], .07, .07, () => c, 'solid');
-  castShadow(p.x, p.y, z * .5, .08);
+function house(side, a0, a1, h, colorAt, seed, paintEnd) {
+  const d0 = (side === 'y' ? WALL_Y : WALL_X) - HOUSE_D, d1 = d0 + HOUSE_D;
+  const slab = (b0, b1, c0, c1, z0, z1, c, k) => side === 'y' ? box(b0, c0, z0, b1, c1, z1, c, k) : box(c0, b0, z0, c1, b1, z1, c, k);
+  slab(a0, a1, d0, d1, 0, h, ROOF, seed);
+  paint(side, d1 + .01, a0, a1, 0, h, colorAt, side === 'y' ? 3 : 2);
+  // the open end of the row shows the same plaster
+  if (paintEnd) paint(side === 'y' ? 'x' : 'y', a1 + .01, d0, d1, 0, h, colorAt, side === 'y' ? 2 : 3);
+  // a low parapet round the flat roof, overhanging the front a little
+  const rim = RIM;
+  slab(a0, a1, d1 - .26, d1 + .1, h, h + PARAPET, rim, seed + 1);
+  slab(a0, a1, d0, d0 + .22, h, h + PARAPET, rim, seed + 2);
+  slab(a0, a0 + .22, d0, d1, h, h + PARAPET, rim, seed + 3);
+  slab(a1 - .22, a1, d0, d1, h, h + PARAPET, rim, seed + 4);
 }
-function rope() {
-  const n = 220;
-  let prev = null;
-  for (let k = 0; k <= n; k++) {
-    const a = k / n * Math.PI * 2, p = toWorld(Math.cos(a) * ROPE_U, Math.sin(a) * ROPE_V);
-    if (prev) capsule([prev.x, prev.y, .08], [p.x, p.y, .08], .08, .08, () => ROPE, 'solid');
-    if (k % 2 === 0) castShadow(p.x, p.y, .08, .1, 1, 0);
-    prev = p;
+function windowAt(side, c, z0, z1, shutters) {
+  const at = (side === 'y' ? WALL_Y : WALL_X) + .06, hw = .5;
+  paint(side, at - .03, c - hw - .1, c + hw + .1, z0 - .12, z1 + .1, () => rampOf(STONE)[side === 'y' ? 4 : 3]);
+  paint(side, at, c - hw, c + hw, z0, z1, (a, z) => {
+    const bar = Math.abs(a - c) < .03 || (z - z0) % .36 < .045;
+    return rampOf(GLASS)[bar ? 3 : 1];
+  });
+  if (shutters) for (const s of [-1, 1]) paint(side, at + .02, c + s * hw + (s < 0 ? -.55 : 0), c + s * hw + (s > 0 ? .55 : 0), z0, z1, (a, z) => rampOf(SHUTTER)[(Math.floor((z - z0) / .14) % 2 ? 3 : 2) - (side === 'x' ? 1 : 0)]);
+  // the sill
+  if (side === 'y') box(c - hw - .15, WALL_Y, z0 - .2, c + hw + .15, WALL_Y + .18, z0 - .1, STONE, c | 0);
+  else box(WALL_X, c - hw - .15, z0 - .2, WALL_X + .18, c + hw + .15, z0 - .1, STONE, c | 0);
+}
+function doorAt(side, c, color, stepColor) {
+  const at = (side === 'y' ? WALL_Y : WALL_X) + .05, hw = .55, top = 2.25, ramp = rampOf(color);
+  paint(side, at - .02, c - hw - .12, c + hw + .12, 0, top + .12, () => rampOf(STONE)[side === 'y' ? 3 : 2]);
+  paint(side, at, c - hw, c + hw, .25, top, (a, z) => {
+    const panel = Math.abs(a - c) < .04 || Math.abs(z - 1.3) < .04 || Math.abs(Math.abs(a - c) - hw) < .06;
+    return ramp[(panel ? 1 : 3) - (side === 'x' ? 1 : 0)];
+  });
+  plot(side === 'y' ? c + hw - .18 : at + .02, side === 'y' ? at + .02 : c + hw - .18, 1.15, rgb(232, 196, 96)); // handle
+  // the step out onto the footpath
+  if (side === 'y') box(c - hw - .25, WALL_Y, 0, c + hw + .25, WALL_Y + .62, .26, stepColor, c | 0);
+  else box(WALL_X, c - hw - .25, 0, WALL_X + .62, c + hw + .25, .26, stepColor, c | 0);
+}
+function wallShadow(side, a0, a1, h) {
+  for (let a = a0; a <= a1; a += .45) for (let z = .3; z < h + PARAPET; z += .55) {
+    if (side === 'y') castShadow(a, WALL_Y - .5, z, .5);
+    else castShadow(WALL_X - .5, a, z, .5);
   }
 }
-function sightscreen() {
-  const v = -ROPE_V - 1.5;
-  board(-3, 3, v, .4, 2.1, [236, 232, 220]);
-  for (const u of [-2.6, 0, 2.6]) post(u, v + .12, .45, [120, 116, 108]);
-  for (let u = -3.2; u <= 3.2; u += .3) {
-    const p = toWorld(u, v);
-    castShadow(p.x, p.y, 1.25, .3);
+function buildHouses() {
+  // left side on screen: one pale green house with a shuttered window, a door and a chalked tally
+  house('x', WALL_Y - HOUSE_D, 6.6, WALL_H_LEFT, plaster(PLASTER_D, 7), 1, true);
+  windowAt('x', -3.6, 1.35, 2.75, true);
+  doorAt('x', 2.6, DOOR_WOOD, STONE);
+  paint('x', WALL_X + .07, -1.5, -.5, 1.2, 1.7, (a, z) => {
+    const mark = (a + 1.5) % .16 < .05 || (Math.abs((z - 1.2) - (a + 1.5) * .45) < .04 && a < -.85);
+    return mark && hash(a * 40 | 0, z * 40 | 0) > .2 ? CHALK : null;
+  });
+  // right side on screen: an ochre house, a bare brick house and a pink one
+  house('y', WALL_X, -1.4, WALL_H_BACK, plaster(PLASTER_A, 2), 3);
+  house('y', -1.4, 5.4, WALL_H_BACK - .3, brickwork, 5);
+  house('y', 5.4, 12.8, WALL_H_BACK + .2, plaster(PLASTER_C, 4), 7, true);
+  windowAt('y', -8.4, 1.35, 2.75, true);
+  doorAt('y', -4, DOOR_BLUE, STONE);
+  windowAt('y', 1.4, 1.5, 2.6, false);
+  windowAt('y', 3.8, 1.5, 2.6, false);
+  doorAt('y', 7.2, DOOR_WOOD, STONE);
+  windowAt('y', 10.2, 1.35, 2.75, true);
+  // a black water tank on the pink house's roof and a meter box on the brick
+  for (let a = 0; a < 6.283; a += .03) for (let z = WALL_H_BACK + .55; z <= WALL_H_BACK + 1.5; z += .04) {
+    const nx = Math.cos(a), ny = Math.sin(a), lit = clamp(Math.round(2.4 - .7 * nx + .9 * ny), 0, 4);
+    plot(9.4 + nx * .6, -8.6 + ny * .6, z, rampOf([58, 60, 66])[lit]);
+  }
+  for (let a = 0; a < 6.283; a += .05) for (let q = 0; q < .6; q += .04) plot(9.4 + Math.cos(a) * q, -8.6 + Math.sin(a) * q, WALL_H_BACK + 1.5, rampOf([58, 60, 66])[3]);
+  castShadow(9.4, -8.6, WALL_H_BACK + 1, .65);
+  box(.1, WALL_Y, 1.9, .6, WALL_Y + .2, 2.6, [200, 196, 186], 11);
+  wallShadow('x', WALL_Y, 6.6, WALL_H_LEFT);
+  wallShadow('y', WALL_X, 12.8, WALL_H_BACK);
+}
+// a terracotta pot whose leaves sway with the wind (their sway height is lifted so low pots still move)
+function potPlant(x, y, r, seed) {
+  box(x - r * .75, y - r * .75, 0, x + r * .75, y + r * .75, r * 1.3, POT, seed);
+  castShadow(x, y, r * .7, r * .9);
+  for (let n = 0; n < 16; n++) {
+    const a = hash(n, seed) * 6.283, d = Math.sqrt(hash(n, seed + 1)) * r * 1.05, z = r * 1.55 + hash(n, seed + 2) * r * 1.2;
+    capture = [];
+    sphere(x + Math.cos(a) * d, y + Math.sin(a) * d, z, .17 + hash(n, seed + 3) * .1, POT_LEAF[(hash(n, seed + 4) * 3) | 0], 'rough');
+    leaves.push({ x, y, z: 4.4, k: 2 * n + 1, r: .2, pixels: capture });
+    capture = null;
+    castShadow(x + Math.cos(a) * d, y + Math.sin(a) * d, z, .2);
   }
 }
-// a small hut with a dark board of digits and a roof
-function scoreboard() {
-  const c = toWorld(-11.6, -15.4), hw = 1.3, hd = .9;
-  const wood = [150, 104, 64], roof = [112, 60, 46];
-  box(c.x - hw, c.y - hd, 0, c.x + hw, c.y + hd, 1.9, wood, 3);
-  box(c.x - hw - .15, c.y - hd - .15, 1.9, c.x + hw + .15, c.y + hd + .15, 2.1, roof, 4);
-  // the board faces +y in world space, the side the camera sees
-  const panel = rgb(40, 44, 42), digit = rgb(244, 236, 200);
-  for (let a = -hw + .25; a <= hw - .25; a += .03) for (let z = .7; z <= 1.6; z += .03) plot(c.x + a, c.y + hd + .02, z, panel);
-  for (let k = 0; k < 3; k++) for (let a = 0; a < .45; a += .03) for (let z = 0; z < .5; z += .03) {
-    const lit = (a < .08 || a > .37 || z < .08 || z > .42 || Math.abs(z - .25) < .05) && hash(k * 9 + (a * 30 | 0), z * 30 | 0) > .25;
-    if (lit) plot(c.x - hw + .45 + k * .7 + a, c.y + hd + .03, .9 + z, digit);
+function drum(x, y, r, h, color, ribs) {
+  const ramp = rampOf(color), step = .04;
+  for (let a = 0; a < 6.283; a += .025) for (let z = 0; z <= h; z += step) {
+    const nx = Math.cos(a), ny = Math.sin(a);
+    let tone = Math.round(2.3 + .9 * nx + .7 * ny - .4);
+    if (ribs && ribs.some(rz => Math.abs(z - rz) < .045)) tone += 1;
+    plot(x + nx * r, y + ny * r, z, ramp[clamp(tone, 0, 4)]);
   }
-  for (let a = -hw; a <= hw; a += .3) for (let z = .2; z < 2; z += .45) castShadow(c.x + a, c.y, z, .5);
+  for (let a = 0; a < 6.283; a += .05) for (let q = 0; q < r; q += step) plot(x + Math.cos(a) * q, y + Math.sin(a) * q, h, ramp[q > r - .08 ? 4 : 3]);
+  for (let z = .2; z <= h; z += .3) castShadow(x, y, z, r);
 }
-function bench(u, v) {
-  const c = toWorld(u, v), seat = [156, 112, 66];
-  box(c.x - 1.2, c.y - .25, .55, c.x + 1.2, c.y + .25, .66, seat, 7);
-  for (const dx of [-1.05, .95]) box(c.x + dx, c.y - .2, 0, c.x + dx + .12, c.y + .2, .55, [64, 58, 54], 8);
-  for (let dx = -1.1; dx <= 1.1; dx += .3) castShadow(c.x + dx, c.y, .6, .26);
+function scooter(x, y) {
+  const body = [190, 64, 52], dark = [44, 42, 48], chrome = [206, 206, 200];
+  for (const wx of [x - .55, x + .62]) capsule([wx, y - .1, .24], [wx, y + .1, .24], .24, .24, () => dark, 'solid');
+  capsule([x - .65, y, .55], [x + .2, y, .5], .3, .26, () => body, 'solid');
+  box(x - .75, y - .2, .78, x - .05, y + .2, .9, [52, 46, 44], 21);
+  capsule([x + .2, y, .28], [x + .5, y, .3], .2, .2, () => body, 'solid');
+  capsule([x + .62, y, .3], [x + .72, y, 1.15], .16, .12, () => body, 'solid');
+  capsule([x + .74, y - .38, 1.22], [x + .74, y + .38, 1.22], .05, .05, () => chrome, 'solid');
+  sphere(x + .82, y, 1.12, .1, [250, 238, 196], 'gloss');
+  for (let k = -.7; k <= .8; k += .25) castShadow(x + k, y, .55, .35);
+  castShadow(x + .72, y, 1, .2);
+}
+// a stray asleep against the brick house, curled up out of the way
+function dog(x, y) {
+  const coat = () => [196, 150, 96];
+  capsule([x - .45, y, .26], [x + .3, y + .05, .24], .26, .22, coat, 'solid');
+  sphere(x + .55, y + .16, .22, .17, [196, 150, 96], 'solid');
+  capsule([x + .62, y + .26, .2], [x + .78, y + .3, .16], .07, .06, () => [150, 108, 70], 'solid');
+  capsule([x - .6, y + .05, .16], [x - .5, y + .4, .08], .06, .05, coat, 'solid');
+  for (let k = -.5; k <= .5; k += .25) castShadow(x + k, y, .25, .28);
+}
+function bicycle(y, lean) {
+  const steel = rgb(226, 82, 64), tyre = rgb(40, 38, 44), x0 = WALL_X + .3;
+  const X = z => x0 + (1.1 - z) * lean;
+  const ring = (cy) => {
+    for (let a = 0; a < 6.283; a += .02) {
+      const z = .38 + Math.sin(a) * .38;
+      plot(X(z), cy + Math.cos(a) * .38, z, tyre);
+    }
+  };
+  ring(y - .58); ring(y + .58);
+  const line = (y0, z0, y1, z1) => { for (let t = 0; t <= 1; t += .015) { const z = lerp(z0, z1, t); plot(X(z), lerp(y0, y1, t), z, steel); plot(X(z), lerp(y0, y1, t), z + .04, steel); } };
+  line(y - .58, .38, y - .05, .38); line(y - .05, .38, y + .3, .95); line(y + .3, .95, y - .3, .95); line(y - .3, .95, y - .05, .38);
+  line(y - .3, .95, y - .58, .38); line(y + .3, .95, y + .58, .38); line(y + .3, .95, y + .32, 1.18);
+  line(y + .2, 1.18, y + .45, 1.18); line(y - .4, 1.05, y - .15, 1.05);
+  for (let k = -.8; k <= .8; k += .3) castShadow(x0, y + k, .5, .35);
+}
+// a slack line strung between the two houses with a few pieces of washing pegged to it
+function washingLine() {
+  const a = [WALL_X, -.6, 3.65], b = [-6.8, WALL_Y, 3.75], rope = rgb(234, 230, 220);
+  const at = t => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t) - Math.sin(t * Math.PI) * .32];
+  for (let t = 0; t <= 1; t += .004) { const p = at(t); plot(p[0], p[1], p[2], rope); }
+  for (let t = 0; t <= 1; t += .04) { const p = at(t); castShadow(p[0], p[1], p[2], .05, 1, 0); }
+  const cloths = [[.2, .32, .9, [238, 120, 92]], [.36, .22, .6, [246, 244, 232]], [.52, .3, 1.05, [92, 148, 176]], [.7, .2, .5, [246, 204, 92]]];
+  const dir = [b[0] - a[0], b[1] - a[1]], len = Math.hypot(...dir), ux = dir[0] / len, uy = dir[1] / len;
+  for (const [t, half, drop, color] of cloths) {
+    const p = at(t), ramp = rampOf(color);
+    for (let s = -half * len / 10; s <= half * len / 10; s += .035) for (let d = 0; d <= drop; d += .035) {
+      const wave = Math.sin(s * 5 + t * 9) * .06;
+      plot(p[0] + ux * s - uy * wave, p[1] + uy * s + ux * wave, p[2] - d, ramp[clamp(3 + Math.round(Math.cos(s * 5 + t * 9)), 2, 4)]);
+    }
+    for (let s = -half * len / 10; s <= half * len / 10; s += .3) castShadow(p[0] + ux * s, p[1] + uy * s, p[2] - drop / 2, .3);
+  }
+}
+// the batter's stumps are a stack of bricks, staggered like a gully wicket
+function brickStack(x, y, count) {
+  for (let k = 0; k < count; k++) {
+    const off = (k % 2 ? .05 : -.04), z = k * BRICK.h;
+    box(x - BRICK.w / 2 + off * .4, y - BRICK.l / 2 + off, z, x + BRICK.w / 2 + off * .4, y + BRICK.l / 2 + off, z + BRICK.h - .02, BRICKWORK, 30 + k);
+  }
+  for (let z = .1; z < count * BRICK.h; z += .15) castShadow(x, y, z, .3);
 }
 function bake() {
   zb.fill(-1e9);
   pix.fill(rgb(255, 255, 255));
   for (let iy = 0; iy < H; iy++) for (let ix = 0; ix < W; ix++) {
-    const g = unproject(ix + .5, iy + .5), i = iy * W + ix, c = groundColor(g.x, g.y, ix, iy, i);
+    const g = unproject(ix + .5, iy + .5), i = iy * W + ix;
+    let c = groundColor(g.x, g.y, ix, iy, i);
+    if (c === null) c = chalky(i, hash(ix, iy)) || rgb(...ASPHALT[1]);
     if (!c) continue;
     pix[i] = c; ground[i] = 1;
     zb[i] = (g.x + g.y) / R2 * COS;
@@ -190,13 +362,27 @@ function bake() {
   growGrass();
   groundZ.set(zb);
 
-  const t1 = toWorld(13.2, -11.8), t2 = toWorld(-14.2, 9.6);
-  growTree(t1.x, t1.y, .85, 300);
-  growTree(t2.x, t2.y, .75, 260, 500);
-  rope();
-  sightscreen();
-  scoreboard();
-  bench(12.4, 12.6);
+  growTree(-5.6, -10.7, 1.1, 320);
+  growTree(-14.9, 3.8, .95, 260, 500);
+  buildHouses();
+  washingLine();
+  potPlant(-10.6, WALL_Y + .45, .38, 3);
+  potPlant(-9.7, WALL_Y + .42, .32, 5);
+  potPlant(-2.8, WALL_Y + .95, .3, 7);
+  potPlant(WALL_X + .45, 4.4, .4, 9);
+  potPlant(11.6, WALL_Y + .45, .36, 11);
+  drum(WALL_X + .75, WALL_Y + .75, .5, 1.15, [64, 118, 172], [.3, .85]);
+  scooter(2.4, WALL_Y + .7);
+  bicycle(-1.1, .12);
+  dog(4.7, WALL_Y + .62);
+  drum(BACKSTOP.x, BACKSTOP.y, BACKSTOP.r, BACKSTOP.h, [150, 70, 48], [.25, .75]);
+  brickStack(STUMPS_X, PITCH_Y, STUMP_BRICKS);
+  box(BRICK_X - BRICK.w / 2, PITCH_Y - BRICK.l / 2, 0, BRICK_X + BRICK.w / 2, PITCH_Y + BRICK.l / 2, BRICK.h, BRICKWORK, 40);
+  castShadow(BRICK_X, PITCH_Y, .08, .3);
+  // two kids watching from the blue door's step
+  pendingShadows.length = 0;
+  figure(-4.4, WALL_Y + .35, Math.atan2(BATTER.y - WALL_Y, BATTER.x + 4.4), { z: .26, scale: .66, crouch: .9, lean: .3, stance: .1, armR: .9, armL: .9 }, { shirt: [232, 200, 72], stripe: [232, 200, 72], legs: [60, 64, 92], skin: SKIN[3], hair: HAIR[1] }, dynamicAdd);
+  figure(-3.5, WALL_Y + .38, Math.atan2(BATTER.y - WALL_Y, BATTER.x + 3.5), { z: .26, scale: .62, stance: .06, armR: .15, armL: .15 }, { shirt: [214, 96, 132], stripe: [214, 96, 132], legs: [88, 60, 70], skin: SKIN[4], hair: HAIR[0] }, dynamicAdd);
   flushShadows();
   bakeOcclusion();
   staticShadow.set(shadowMask);
@@ -207,17 +393,15 @@ function bake() {
 }
 
 /* ---------- game state ---------- */
-const person = (spot, k, kit, face) => ({ ...spot, yaw: face, palette: { ...kit, skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
+const person = (spot, k, kit, yaw) => ({ x: spot.x, y: spot.y, yaw, palette: { ...kit, skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
+const facing = (from, to) => Math.atan2(to.y - from.y, to.x - from.x);
 const G = {
   phase: 'idle', time: 0, status: '',
-  stumps: { [BAT_END]: { down: 0 }, [BOWL_END]: { down: 0 } },
-  batter: person(SPOTS.batter, 0, KIT_BAT, yawTo(-1, .8)),
-  keeper: person(SPOTS.keeper, 1, KIT_FIELD, yawTo(0, 1)),
-  bowler: person(SPOTS.bowler, 2, KIT_FIELD, yawTo(0, -1)),
-  fielders: SPOTS.fielders.map((s, k) => person(s, k + 3, KIT_FIELD, yawTo(SPOTS.batter.u - s.u, SPOTS.batter.v - s.v))),
+  // the batter stands side-on: chest towards +y (the camera side, the off side), front shoulder to the bowler
+  batter: person(BATTER, 0, KIT_BAT, Math.PI / 2),
+  bowler: person(BOWLER, 1, KIT_FIELD, facing(BOWLER, BATTER)),
+  fielders: FIELDERS.map((s, k) => ({ name: s.name, ...person(s, k + 2, KIT_FIELD, facing(s, BATTER)) })),
 };
-G.batter.palette.hair = HELMET;
-G.batter.palette.legs = PADS;
 
 const nodes = {
   runs: document.getElementById('runs'),
@@ -237,44 +421,34 @@ function update(dt) {
 }
 
 /* ---------- drawing ---------- */
-function drawStumps(end) {
-  const v = end * STUMPS_V;
-  for (let k = -1; k <= 1; k++) {
-    const p = toWorld(k * STUMP_GAP, v);
-    dynamicAdd([p.x, p.y, 0], [p.x, p.y, STUMP_Z], STUMP_R, STUMP_R, () => STUMP);
-  }
-  const a = toWorld(-STUMP_GAP, v), b = toWorld(STUMP_GAP, v);
-  dynamicAdd([a.x, a.y, STUMP_Z + .04], [b.x, b.y, STUMP_Z + .04], .04, .04, () => BAIL);
+function drawFigure(p, pose) {
+  return figure(p.x, p.y, p.yaw, { scale: FIG_SCALE, ...pose }, p.palette, dynamicAdd);
 }
-function drawFielder(p, pose) {
-  const w = toWorld(p.u, p.v);
-  return figure(w.x, w.y, p.yaw, { scale: FIG_SCALE, ...pose }, p.palette, dynamicAdd);
-}
+// the batter waits in a high backlift: the top hand reaches across the chest to a grip by the back hip,
+// and the bat points up behind the back shoulder, clear of the body, so it reads against the paving
 function drawBatter() {
-  const p = G.batter, w = toWorld(p.u, p.v);
-  const hand = drawFielder(p, { crouch: .3, lean: .22, stance: .14, armR: .55, armL: .5 });
-  // the bat hangs from the hands to a toe resting just in front of the feet
-  const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), k = FIG_SCALE;
-  const toe = [w.x + (fx * .7 - fy * .3) * k, w.y + (fy * .7 + fx * .3) * k, .12];
-  const dx = toe[0] - hand[0], dy = toe[1] - hand[1], dz = toe[2] - hand[2], len = Math.hypot(dx, dy, dz);
-  const neck = [hand[0] + dx / len * .3, hand[1] + dy / len * .3, hand[2] + dz / len * .3];
-  dynamicAdd(hand, neck, .05, .05, () => GRIP);
-  dynamicAdd(neck, toe, .1, .11, () => BLADE);
-}
-function drawKeeper() {
-  const hand = drawFielder(G.keeper, { crouch: 1.5, lean: .55, stance: .34, armR: 1.25, armL: 1.25 });
-  dynamicAdd(hand, hand, .13, .13, () => GLOVE);
+  const p = G.batter, k = FIG_SCALE, pose = { crouch: .3, lean: .16, stance: .02, armR: .2, armL: .55 };
+  let bone = 0;
+  // bones 10 and 11 are the front arm; it is drawn below instead, crossing to the grip
+  figure(p.x, p.y, p.yaw, { scale: k, ...pose }, p.palette, (a, b, r0, r1, f) => { if (bone !== 10 && bone !== 11) dynamicAdd(a, b, r0, r1, f); bone++; });
+  const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), sx = -fy, sy = fx;
+  const P = (f, s, z) => [p.x + (fx * f + sx * s) * k, p.y + (fy * f + sy * s) * k, z * k];
+  const shZ = 1.28 - pose.crouch * .4 + Math.cos(pose.lean) * .95, shA = -pose.crouch * .15 + Math.sin(pose.lean) * .95;
+  const shoulder = P(shA, .36, shZ - .03), grip = P(shA + .05, -.5, shZ - .45), elbow = P(shA + .38, .05, shZ - .55);
+  dynamicAdd(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
+  dynamicAdd(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
+  const dir = [.32, -.12, 1], len = Math.hypot(...dir);
+  const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, grip[2] + dir[2] / len * d * k];
+  dynamicAdd(at(-.05), at(.36), .06 * k, .06 * k, () => GRIP);
+  dynamicAdd(at(.4), at(1.22), .15 * k, .15 * k, () => BLADE);
 }
 function draw() {
   pix.set(bakedPix);
   zb.set(bakedZ);
   pendingShadows.length = 0;
-  drawStumps(BAT_END);
-  drawStumps(BOWL_END);
+  drawFigure(G.bowler, { stance: .12, armR: .2, armL: .1 });
+  for (const f of G.fielders) drawFigure(f, { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 });
   drawBatter();
-  drawKeeper();
-  drawFielder(G.bowler, { stance: .12, armR: .12, armL: .1 });
-  for (const f of G.fielders) drawFielder(f, { crouch: .18, lean: .16, stance: .2, armR: .35, armL: .35 });
   const windT = STILL ? 0 : Math.floor(G.time * WIND_FPS) / WIND_FPS;
   drawLeaves(windT);
   drawTufts(windT);
@@ -305,7 +479,11 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-window.__cricket = { G, toWorld, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
+const LANE = {
+  WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
+  CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
+};
+window.__cricket = { G, LANE, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
 </script>
 </body>
 </html>
