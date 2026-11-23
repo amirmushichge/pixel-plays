@@ -102,13 +102,14 @@ const AIM_X = 8.5;                                 // bowlers aim along the line
 const STUMPS_FACE = STUMPS_X - BRICK.w / 2 - .05;  // the front of the brick stack, allowing for the stagger
 const BOWLED_HALF = .3;                            // a missed ball whose centre passes this close to PITCH_Y hits the bricks
 const ARM_RELEASE = -3.4;                          // bowling arm just past vertical, swinging over the top
-/* the two bowler types. mark: where the run-up starts. run: run-up speed. stride: leg cycle rate. speed: ball
+/* the two bowler types. mark: where the run-up starts. run: its average speed (the animation is in RUNUP). lean: kept for the release
+   point, which still comes from the original release pose (releasePose). speed: ball
    speed out of the hand; after: the fraction it keeps off the pitch. bounce: ball height at the stumps.
    pitch: the range of pitching spots along x. move: how far the ball has moved sideways by the time it reaches
    the stumps. window: |press - arrival| limits for perfect, good and mistimed; anything wider is a miss. */
 const BOWLERS = {
-  fast: { mark: -11, run: 6.8, stride: 10, step: .3, lean: .22, deliver: .3, speed: 15, after: .85, bounce: .55, pitch: [2.6, 4.8], move: [.4, .5], moves: ['in', 'away', 'none'], window: [.07, .15, .26] },
-  spin: { mark: -6.8, run: 2.4, stride: 6, step: .16, lean: .06, deliver: .4, speed: 9.5, after: .8, bounce: .42, pitch: [1.6, 4.2], move: [.6, .8], moves: ['in', 'away'], window: [.09, .20, .36] },
+  fast: { mark: -11, run: 6.8, lean: .22, speed: 15, after: .85, bounce: .55, pitch: [2.6, 4.8], move: [.4, .5], moves: ['in', 'away', 'none'], window: [.07, .15, .26] },
+  spin: { mark: -6.8, run: 2.4, lean: .06, speed: 9.5, after: .8, bounce: .42, pitch: [1.6, 4.2], move: [.6, .8], moves: ['in', 'away'], window: [.09, .20, .36] },
 };
 // where the ball is aimed at the stumps before any movement, relative to PITCH_Y
 const LINES = { stumps: [-.06, .06], off: [-.68 * LEG, -.55 * LEG].sort((a, b) => a - b), leg: [.55 * LEG, .68 * LEG].sort((a, b) => a - b) };
@@ -596,23 +597,284 @@ const lineOf = y => (y - PITCH_Y) * LEG > BOWLED_HALF ? 'leg' : (y - PITCH_Y) * 
 const nextType = () => G.ballInOver >= 6 ? (G.overType === 'fast' ? 'spin' : 'fast') : G.overType;
 
 const walkPose = (rate, step) => { const w = Math.sin(G.time * rate); return { stance: .08 + step * Math.abs(w), armR: w * .5, armL: -w * .5 }; };
-// where the bowler is and how he stands, s seconds after the run-up started
-function bowlerAt(d, s) {
-  const B = BOWLERS[d.type], yaw = BOWLER_YAW;
-  if (s < d.runT) {
-    const x = lerp(d.mark, RELEASE_X, clamp(s / d.runT, 0, 1)), into = s - (d.runT - B.deliver);
-    if (into < 0) {
-      const w = Math.sin(s * B.stride);
-      return { x, yaw, pose: { stance: .08 + B.step * Math.abs(w), lean: B.lean, armR: w * .7, armL: -w * .7 } };
-    }
-    // the delivery stride: front arm up, bowling arm coming over the top
-    const u = into / B.deliver;
-    return { x, yaw, pose: { stance: .3, lean: lerp(-.08, B.lean + .1, u), armR: lerp(-.4, ARM_RELEASE, u), armL: lerp(2.6, .4, u) } };
-  }
-  // the follow-through carries on down the pitch and the arm finishes across the body
-  const v = clamp((s - d.runT) / .4, 0, 1);
-  return { x: RELEASE_X + ease(v) * (d.type === 'fast' ? 1.3 : .6), yaw, pose: { stance: lerp(.3, .18, v), lean: lerp(B.lean + .1, .3, v), armR: lerp(ARM_RELEASE, -5.6, v), armL: lerp(.4, -.3, v) } };
+/* ---------- jointed figures ----------
+   The engine's figure() has one symmetric stance, arms that only swing fore and aft, and knees and elbows it
+   places itself. The bowler and the batter need more than that, so they are drawn here from a body spec: the
+   pelvis, how the hips and chest are turned and tilted, and where the feet and hands are in the world. Knees and
+   elbows are found by two-bone IK. Bone lengths, radii and colours are figure()'s, so they match the fielders.
+   Spec fields: k (scale), pelvis [x, y, z], hipYaw, chestYaw, lean (forward), roll (towards the right side),
+   footL/footR (ankles, z .12 on the ground), toeL/toeR (angles), handL/handR, poleL/poleR (which way the elbows
+   point). "Right" is the figure's own right as seen on screen, the same side as figure()'s armR. */
+const vAdd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const vSub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const vMul = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const vDot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const vCross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const vLen = a => Math.hypot(a[0], a[1], a[2]);
+const vNorm = a => vMul(a, 1 / (vLen(a) || 1));
+const vMix = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const angMix = (a, b, t) => a + (Math.atan2(Math.sin(b - a), Math.cos(b - a))) * t;
+const LEG_LEN = 1.16, THIGH = .58, SHIN = .58, UPPER_ARM = .46, FOREARM = .5, ARM_LEN = .96;
+// a two-bone limb from a towards t, bending towards pole; out of reach it straightens and points at t
+function ik(a, t, l1, l2, pole) {
+  let d = vSub(t, a), n = vLen(d);
+  const max = (l1 + l2) * .9995, min = Math.abs(l1 - l2) + 1e-4;
+  if (n > max) { d = vMul(d, max / n); n = max; }
+  else if (n < min) { d = vMul(d, min / (n || 1)); n = min; }
+  const u = vMul(d, 1 / n), x = (l1 * l1 - l2 * l2 + n * n) / (2 * n), h = Math.sqrt(Math.max(0, l1 * l1 - x * x));
+  let p = vSub(pole, vMul(u, vDot(pole, u)));
+  if (vLen(p) < 1e-6) p = Math.abs(u[2]) < .9 ? [0, 0, 1] : [1, 0, 0];
+  p = vNorm(p);
+  return { mid: vAdd(vAdd(a, vMul(u, x)), vMul(p, h)), end: vAdd(a, d) };
 }
+// the chest frame of a spec: spine direction, the chest's right and forward, the neck, head and both shoulders
+function bodyFrame(b) {
+  const k = b.k, roll = b.roll || 0, cy = b.chestYaw;
+  const cf = [Math.cos(cy), Math.sin(cy), 0], cr = [-Math.sin(cy), Math.cos(cy), 0];
+  const spine = vNorm([cf[0] * Math.sin(b.lean) + cr[0] * Math.sin(roll), cf[1] * Math.sin(b.lean) + cr[1] * Math.sin(roll), Math.cos(b.lean) * Math.cos(roll)]);
+  const right = vNorm(vSub(cr, vMul(spine, vDot(cr, spine)))), fwd = vCross(right, spine);
+  const neck = vAdd(b.pelvis, vMul(spine, 1.03 * k)), base = vSub(neck, vMul(spine, .11 * k));
+  return { spine, right, fwd, neck, head: vAdd(vAdd(neck, vMul(spine, .28 * k)), vMul(fwd, .05 * k)), shL: vAdd(base, vMul(right, -.36 * k)), shR: vAdd(base, vMul(right, .36 * k)) };
+}
+function drawBody(b, t, add = dynamicAdd) {
+  const k = b.k, f = bodyFrame(b), hr = [-Math.sin(b.hipYaw), Math.cos(b.hipYaw), 0];
+  const legs = () => t.legs, skin = () => t.skin, shirt = () => t.shirt;
+  for (const side of [-1, 1]) {
+    const hip = vAdd(b.pelvis, vMul(hr, .15 * k * side)), ta = side < 0 ? b.toeL : b.toeR, toe = [Math.cos(ta), Math.sin(ta), 0];
+    const leg = ik(hip, side < 0 ? b.footL : b.footR, THIGH * k, SHIN * k, [toe[0], toe[1], .15]);
+    add(hip, leg.mid, .17 * k, .13 * k, legs);
+    add(leg.mid, leg.end, .13 * k, .1 * k, legs);
+    add(leg.end, vAdd(leg.end, [toe[0] * .16 * k, toe[1] * .16 * k, -.04 * k]), .1 * k, .09 * k, () => SHOE);
+  }
+  add(b.pelvis, f.neck, .3 * k, .32 * k, shirt);
+  add(f.neck, f.head, .11 * k, .12 * k, skin);
+  add(f.head, f.head, .24 * k, .24 * k, skin);
+  const hair = vAdd(vSub(f.head, vMul(f.fwd, .06 * k)), [0, 0, .08 * k]);
+  add(hair, hair, .205 * k, .205 * k, () => t.hair);
+  const out = { frame: f };
+  for (const side of [-1, 1]) {
+    const sh = side < 0 ? f.shL : f.shR, arm = ik(sh, side < 0 ? b.handL : b.handR, UPPER_ARM * k, FOREARM * k, side < 0 ? b.poleL : b.poleR);
+    add(sh, arm.mid, .12 * k, .1 * k, shirt);
+    add(arm.mid, arm.end, .09 * k, .08 * k, skin);
+    out[side < 0 ? 'handL' : 'handR'] = arm.end;
+  }
+  return out;
+}
+// figure()'s geometry for an ordinary pose, as a spec, so a jointed figure can blend to and from it
+function poseBody(x, y, yaw, pose, k = FIG_SCALE) {
+  const fx = Math.cos(yaw), fy = Math.sin(yaw), sx = -fy, sy = fx, base = pose.z || 0;
+  const P = (a, b, c) => [x + (fx * a + sx * b) * k, y + (fy * a + sy * b) * k, c * k + base];
+  const crouch = pose.crouch || 0, lean = pose.lean || 0, stance = pose.stance == null ? .2 : pose.stance;
+  const hipZ = 1.28 - crouch * .4, hipA = -crouch * .15, shA = hipA + Math.sin(lean) * .95, shZ = hipZ + Math.cos(lean) * .95;
+  const armR = pose.armR == null ? 0 : pose.armR, armL = pose.armL == null ? .08 : pose.armL;
+  const handR = P(shA + Math.sin(armR + .18) * .95, .42, shZ - .03 - Math.cos(armR + .18) * .95);
+  const handL = P(shA + Math.sin(armL + .2) * .9, -.43, shZ - .03 - Math.cos(armL + .2) * .9);
+  const elbowR = P(shA + Math.sin(armR) * .46, .4, shZ - .03 - Math.cos(armR) * .46), elbowL = P(shA + Math.sin(armL) * .46, -.42, shZ - .03 - Math.cos(armL) * .46);
+  const shR = P(shA, .36, shZ - .03), shL = P(shA, -.36, shZ - .03);
+  return {
+    kind: pose, k, pelvis: P(hipA, 0, hipZ), hipYaw: yaw, chestYaw: yaw, lean, roll: 0,
+    footL: P(stance * 2, -.2, .12), footR: P(-stance * 1.2, .2, .12), toeL: yaw, toeR: yaw,
+    handL, handR, poleL: vSub(elbowL, vMix(shL, handL, .5)), poleR: vSub(elbowR, vMix(shR, handR, .5)),
+  };
+}
+function mixBody(a, b, t) {
+  const out = { kind: b.kind, k: b.k };
+  for (const key in b) {
+    if (key === 'kind' || key === 'k') continue;
+    const va = a[key] == null ? b[key] : a[key], vb = b[key];
+    out[key] = Array.isArray(vb) ? vMix(va, vb, t) : /yaw|toe/i.test(key) ? angMix(va, vb, t) : lerp(va, vb, t);
+  }
+  return out;
+}
+// smooth keyframes: [[time, value], ...], eased in and out between neighbours, held flat outside
+function keyed(s, keys) {
+  if (s <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) {
+    if (s > keys[i][0]) continue;
+    const [t0, a] = keys[i - 1], [t1, b] = keys[i];
+    return lerp(a, b, ease((s - t0) / (t1 - t0)));
+  }
+  return keys[keys.length - 1][1];
+}
+// a hand on a circle round the shoulder in the vertical plane along `dir`: figure()'s arm angle (0 down, -pi up,
+// -2pi down in front), plus a sideways push towards `side`
+const armAt = (sh, dir, theta, reach, side = [0, 0, 0]) => vAdd(vAdd(sh, vMul(dir, Math.sin(theta) * reach)), vAdd([0, 0, -Math.cos(theta) * reach], side));
+
+/* ---------- the bowler ----------
+   Planned once per bowler type, as a list of footfalls, so a planted foot never slides:
+   - the run starts from standing and builds up (fast: a sprint; spin: a stroll, then two quicker steps). Strides
+     lengthen with speed, and each foot is planted under the body at mid-stance, on the ground it actually covers;
+   - fast: the last left foot takes off into a bound, the right (back) foot lands side-on, the front foot plants
+     just behind the chalk, the arm comes over, and he follows through for two steps. Spin: the same, smaller;
+   - the follow-through ends exactly where the old one did (it matters: the bowler fields from there).
+   The release frame puts the bowling hand on the planned release point d.R, so the ball leaves from the hand. */
+const RUNUP = {
+  fast: { take: .3, back: .13, front: .045, ftD: 1.3, leap: .36, side: 1.3, lean: .38, base: 1.2, lateral: .1, stance: .32, pump: 1.05, wind: -.6, finish: -5.7, relLean: .18, plant: .3 },
+  spin: { take: .26, back: .12, front: .045, ftD: .6, leap: .12, side: .8, lean: .1, base: 1.24, lateral: .13, stance: .5, pump: .45, wind: -1.7, finish: -5.3, relLean: .04, plant: .08 },
+};
+const RELEASE_AHEAD = .15;                         // at release his hips are a little ahead of his planned x
+const strideLen = v => .42 + .12 * v;              // one step's length at speed v: longer strides when faster
+const plans = {};
+function runPlan(type) {
+  if (plans[type]) return plans[type];
+  const B = BOWLERS[type], R = RUNUP[type], mark = B.mark, T = (RELEASE_X - mark) / B.run, N = 600;
+  const shape = type === 'fast'
+    ? s => ease(clamp(s / (.45 * T), 0, 1)) * lerp(1, .82, ease(clamp((s - (T - .3)) / .3, 0, 1)))
+    : s => (.45 * ease(clamp(s / (.18 * T), 0, 1)) + .55 * ease(clamp((s - .45 * T) / (.25 * T), 0, 1))) * lerp(1, .85, ease(clamp((s - (T - .25)) / .25, 0, 1)));
+  const X = [0], Psi = [0];
+  for (let i = 1; i <= N; i++) X.push(X[i - 1] + (shape(T * (i - .5) / N)) * T / N);
+  const scale = (RELEASE_X - mark) / X[N];
+  for (let i = 1; i <= N; i++) { const v = shape(T * (i - .5) / N) * scale; Psi.push(Psi[i - 1] + v / strideLen(v) * T / N); }
+  const at = (arr, s) => { const f = clamp(s / T, 0, 1) * N, i = Math.min(N - 1, Math.floor(f)); return lerp(arr[i], arr[i + 1], f - i); };
+  const vRel = shape(T) * scale, power = vRel * .4 / R.ftD;
+  const runX = s => mark + at(X, s) * scale;
+  const psi = s => at(Psi, s);
+  const timeOfPsi = p => { let lo = 0, hi = T; for (let n = 0; n < 40; n++) { const m = (lo + hi) / 2; if (psi(m) < p) lo = m; else hi = m; } return (lo + hi) / 2; };
+  // after release: carry on at the release speed and slow down, then exactly the old follow-through from v = .75
+  const ftX = s => {
+    const v = clamp((s - T) / .4, 0, 1);
+    if (v >= .75) return RELEASE_X + ease(v) * R.ftD;
+    return RELEASE_X + R.ftD * lerp(1 - (1 - v) ** power, ease(v), ease(clamp((v - .5) / .25, 0, 1)));
+  };
+  const bodyX = s => s <= T ? runX(s) : ftX(s);
+  const y = BOWLER.y, side = f => y + (f === 'L' ? -1 : 1) * R.lateral;
+  const tTake = T - R.take, last = psi(tTake) - .25, run = [];
+  for (let j = 0; last - j > .2; j++) {
+    const tm = timeOfPsi(last - j), v = Math.max(.5, (runX(tm + .01) - runX(tm - .01)) / .02), half = R.stance * strideLen(v) / v / 2;
+    const f = j % 2 ? 'R' : 'L';
+    run.unshift({ foot: f, t0: tm - half, t1: j === 0 ? tTake : tm + half, x: runX(tm), y: side(f), toe: 0, lift: .16 + .025 * v });
+  }
+  const first = f => run.find(p => p.foot === f);
+  const stand = f => ({ foot: f, t0: -1e9, t1: first(f) ? Math.max(0, first(f).t0 - .2) : 0, x: mark + (f === 'L' ? .2 : -.12), y: side(f), toe: 0, lift: 0 });
+  const fin = ftX(T + .4);
+  const steps = [stand('L'), stand('R'), ...run,
+    { foot: 'R', t0: T - R.back, t1: T - .035, x: runX(T - R.back) + .05, y: y + .03, toe: 1.25, lift: R.leap * 1.1 },
+    { foot: 'L', t0: T - R.front, t1: T + .19, x: RELEASE_X + RELEASE_AHEAD + R.plant, y: y - .1, toe: .3, lift: R.leap * .8 },
+    { foot: 'R', t0: T + .21, t1: 1e9, x: fin - .144, y: y + .2, toe: 0, lift: .3 },
+    { foot: 'L', t0: T + .35, t1: 1e9, x: fin + .24, y: y - .2, toe: 0, lift: .22 },
+  ];
+  const feet = { L: steps.filter(p => p.foot === 'L'), R: steps.filter(p => p.foot === 'R') };
+  return (plans[type] = { T, tTake, feet, bodyX, psi, last, R, vRel, power });
+}
+// where one foot is at time s: planted, or swinging between two footfalls along an arc. w is how far through the
+// swing it is (1 when planted), for the pelvis to sink onto a landing leg
+function footAt(list, s) {
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    if (s < p.t0) {
+      const a = list[i - 1], w = clamp((s - a.t1) / (p.t0 - a.t1), 0, 1), e = ease(w);
+      return { pos: [lerp(a.x, p.x, e), lerp(a.y, p.y, e), .12 + p.lift * Math.sin(Math.PI * w)], toe: lerp(a.toe, p.toe, e), w, planted: false };
+    }
+    if (s <= p.t1) return { pos: [p.x, p.y, .12], toe: p.toe, w: 1, planted: true };
+  }
+  const p = list[list.length - 1];
+  return { pos: [p.x, p.y, .12], toe: p.toe, w: 1, planted: true };
+}
+// the highest the pelvis can be with both legs reaching their feet (a foot about to land counts as it comes down)
+function reachZ(pelvis, hipYaw, feet, k) {
+  const hr = [-Math.sin(hipYaw), Math.cos(hipYaw), 0];
+  let z = pelvis[2];
+  feet.forEach((f, i) => {
+    const hip = vAdd(pelvis, vMul(hr, .15 * k * (i ? 1 : -1))), dx = f.pos[0] - hip[0], dy = f.pos[1] - hip[1];
+    const top = f.pos[2] + Math.sqrt(Math.max(0, (LEG_LEN * k * .985) ** 2 - dx * dx - dy * dy));
+    const w = f.planted ? 1 : ease(clamp((f.w - .65) / .35, 0, 1));
+    z = Math.min(z, lerp(pelvis[2], Math.min(pelvis[2], top), w));
+  });
+  return z;
+}
+// the bowler s seconds after the run-up started: { x, yaw, body }
+function bowlerAt(d, s) {
+  const P = runPlan(d.type), R = P.R, T = P.T, k = FIG_SCALE, yaw = BOWLER_YAW, x = P.bodyX(s);
+  const tTake = P.tTake, tBack = T - R.back, tFront = T - R.front;
+  const fL = footAt(P.feet.L, s), fR = footAt(P.feet.R, s);
+  // run: arms and hips swing against the legs, one cycle every two steps
+  const psi = P.psi(Math.min(s, tTake)), swing = Math.cos(Math.PI * (psi - P.last + .5)) * (s < .05 ? s / .05 : 1);
+  const toRun = clamp(s / .25, 0, 1);
+  const lean = keyed(s, [[0, .02], [.3, R.lean], [tTake - .1, R.lean], [tTake, -.02], [tBack, -.14], [T, R.relLean], [T + .13, .55], [T + .4, .14]]);
+  const roll = keyed(s, [[tBack, 0], [tFront, .04], [T, -.08], [T + .22, 0]]);
+  const chest = keyed(s, [[tTake - .1, 0], [tBack, R.side], [T - .02, -.05], [T + .2, -.75], [T + .4, -.2]]) - (s < tTake ? swing * .14 * toRun : 0);
+  const hips = keyed(s, [[tTake - .1, 0], [tBack, R.side * .62], [T, .1], [T + .2, -.45], [T + .4, -.1]]) + (s < tTake ? swing * .12 * toRun : 0);
+  const ahead = keyed(s, [[tFront, 0], [T, RELEASE_AHEAD], [T + .4, 0]]);
+  // height: a bob on each stride (high in the air, low over the planted foot), and a real leap into the bound
+  let z = R.base + (s < .2 ? (1.28 - R.base) * (1 - s / .2) : 0);
+  if (!fL.planted && !fR.planted) {
+    const a = s < tTake ? Math.max(...[...P.feet.L, ...P.feet.R].filter(p => p.t1 <= s).map(p => p.t1)) : tTake;
+    const b = s < tTake ? Math.min(...[...P.feet.L, ...P.feet.R].filter(p => p.t0 > s).map(p => p.t0)) : tBack;
+    z += (s >= tTake && s < tBack ? R.leap : .06) * Math.sin(Math.PI * clamp((s - a) / (b - a), 0, 1));
+  } else if (s < tTake) z -= .04 * toRun;
+  z += keyed(s, [[tFront, 0], [T - .01, .07], [T + .1, -.04], [T + .4, .06]]);
+  const hipYaw = yaw + hips;
+  let pelvis = [x + ahead, BOWLER.y, z * k];
+  pelvis[2] = reachZ(pelvis, hipYaw, [fL, fR], k);
+  const body = { kind: 'run', k, pelvis, hipYaw, chestYaw: yaw + chest, lean, roll, footL: fL.pos, footR: fR.pos, toeL: yaw + fL.toe, toeR: yaw + fR.toe };
+  const f = bodyFrame(body), dir = [Math.cos(yaw), Math.sin(yaw), 0], left = [Math.sin(yaw), -Math.cos(yaw), 0], down = [0, 0, -1];
+  // run pose: elbows bent, hands pumping fore and aft
+  const runHand = (sh, a) => armAt(sh, f.fwd, a, .72);
+  let hR = runHand(f.shR, swing * R.pump), hL = runHand(f.shL, -swing * R.pump);
+  // gather: both hands come together in front of the chest, the ball held in both
+  const chin = side => vAdd(vAdd(f.neck, vAdd(vMul(f.fwd, .34 * k), vMul(down, .3 * k))), vMul(f.right, side * .06 * k));
+  const g = ease(clamp((s - (tTake - .16)) / .16, 0, 1));
+  hR = vMix(hR, chin(1), g); hL = vMix(hL, chin(-1), g);
+  // bound: front arm reaches up at the batter, bowling arm drops down and back (coiled) by the back-foot landing
+  const coil = ease(clamp((s - tTake) / (tBack - tTake), 0, 1));
+  const frontUp = armAt(f.shL, dir, -2.55, .9 * k), bowlBack = armAt(f.shR, dir, R.wind, .92 * k, vMul(left, -.08 * k));
+  if (s > tTake) { hR = vMix(chin(1), bowlBack, coil); hL = vMix(chin(-1), frontUp, coil); }
+  // delivery: the bowling arm comes over the top in a full circle, accelerating; the front arm pulls down to the hip
+  if (s > tBack) {
+    const u = clamp((s - tBack) / (T - tBack), 0, 1), th = lerp(R.wind, ARM_RELEASE, u * u * (1.6 - .6 * u));
+    hR = armAt(f.shR, dir, th, .92 * k);
+    hL = vMix(frontUp, armAt(f.shL, dir, -.15, .85 * k, vMul(left, .3 * k)), ease(u));
+  }
+  // follow-through: the arm carries on down and across to the far hip, then both hang as he slows
+  if (s > T) {
+    const u = clamp((s - T) / .26, 0, 1), th = lerp(ARM_RELEASE, R.finish, 1 - (1 - u) ** 2);
+    const across = vMul(left, .45 * k * ease(u));
+    hR = armAt(f.shR, dir, th, .92 * k, across);
+    hL = armAt(f.shL, dir, lerp(-.15, .55, ease(u)), .85 * k, vMul(left, .3 * k * (1 - u)));
+    const relax = ease(clamp((s - T - .26) / .14, 0, 1));
+    hR = vMix(hR, armAt(f.shR, f.fwd, .2, .9 * k), relax); hL = vMix(hL, armAt(f.shL, f.fwd, .1, .88 * k), relax);
+  }
+  // the release frame puts the hand exactly on the planned release point; the arm's whole circle bends towards it
+  // from the back-foot landing, and lets go of it through the follow-through
+  if (d.R && s > tBack && s < T + .2) {
+    const w = s <= T ? ease((s - tBack) / (T - tBack)) : 1 - ease((s - T) / .2);
+    hR = vAdd(hR, vMul(vSub([d.R.x, d.R.y, d.R.z], releaseArc(d.type)), w));
+  }
+  body.handR = hR; body.handL = hL;
+  // elbows point back while running, then out to the side for the bowling action, turning across smoothly
+  const back = vAdd(vMul(f.fwd, -1), [0, 0, -.4]);
+  body.poleR = vMix(back, vAdd(left, [0, 0, -.2]), ease(clamp((s - tTake) / (tBack - tTake), 0, 1)));
+  body.poleL = vMix(back, vAdd(left, vMul(f.fwd, -.3)), ease(clamp((s - (tTake - .16)) / (tBack - tTake + .16), 0, 1)));
+  return { x, yaw, body };
+}
+// the bowling hand at the release frame before it is pinned to d.R (the same for every ball of a type)
+const arcs = {};
+function releaseArc(type) {
+  if (arcs[type]) return arcs[type];
+  const P = runPlan(type), b = bowlerAt({ type }, P.T).body, f = bodyFrame(b);
+  return (arcs[type] = armAt(f.shR, [Math.cos(BOWLER_YAW), Math.sin(BOWLER_YAW), 0], ARM_RELEASE, .92 * FIG_SCALE));
+}
+// walking back to the mark: a cyclic gait driven by the distance walked, so the planted foot keeps still
+function gaitBody(x, y, yaw, dist, k = FIG_SCALE) {
+  const cycle = 1.7, stance = .56, L = stance * cycle, fx = Math.cos(yaw), fy = Math.sin(yaw), sx = -fy, sy = fx;
+  const foot = (ph, b) => {
+    const q = ((ph + stance / 2) % 1 + 1) % 1;
+    let a, z = .12;
+    if (q < stance) a = L / 2 - q / stance * L;
+    else { const w = (q - stance) / (1 - stance); a = lerp(-L / 2, L / 2, ease(w)); z += .13 * Math.sin(Math.PI * w); }
+    return [x + (fx * a + sx * b) * k, y + (fy * a + sy * b) * k, z * k];
+  };
+  const ph = dist / cycle, sw = Math.cos(2 * Math.PI * ph), bob = .03 * Math.cos(4 * Math.PI * ph);
+  const body = { kind: 'walk', k, pelvis: [x, y, (1.25 + bob) * k], hipYaw: yaw + .1 * sw, chestYaw: yaw - .1 * sw, lean: .06, roll: 0,
+    footL: foot(ph, -.13), footR: foot(ph + .5, .13), toeL: yaw, toeR: yaw };
+  const f = bodyFrame(body);
+  body.handR = armAt(f.shR, f.fwd, -sw * .5, .9 * k); body.handL = armAt(f.shL, f.fwd, sw * .5, .9 * k);
+  body.poleR = body.poleL = vAdd(vMul(f.fwd, -1), [0, 0, -.3]);
+  return body;
+}
+// the release pose of the original run-up. The release point d.R is still worked out from it, so every ball
+// leaves the hand from exactly the same place as before the run-up was redrawn
+const releasePose = type => ({ scale: FIG_SCALE, stance: .3, lean: BOWLERS[type].lean + .1, armR: ARM_RELEASE, armL: .4 });
 // start a delivery now. opts (and G.force) may fix: type 'fast'|'spin', line 'stumps'|'off'|'leg', move 'in'|'away'|'none',
 // amount (sideways movement at the stumps), offset (aim at the stumps relative to PITCH_Y), length (pitching x)
 function bowl(opts = {}) {
@@ -632,8 +894,7 @@ function bowl(opts = {}) {
   G.balls++; G.ballInOver++;
   const d = { stage: 'runup', n: G.balls, type, line, move, amount, aim, t0: G.time, mark: B.mark, runT: (RELEASE_X - B.mark) / B.run, swing: null, hitAt: null, bounced: false };
   // the ball leaves the bowling hand at the top of the delivery stride
-  const rel = bowlerAt(d, d.runT);
-  const hand = figure(rel.x, BOWLER.y, rel.yaw, { scale: FIG_SCALE, ...rel.pose }, G.bowler.palette, () => {});
+  const hand = figure(RELEASE_X, BOWLER.y, BOWLER_YAW, releasePose(type), G.bowler.palette, () => {});
   d.R = { x: hand[0], y: hand[1], z: hand[2] };
   // it pitches on the straight line from the hand to its aim at the stumps
   d.P = { x: px, y: lerp(d.R.y, aim, (px - d.R.x) / (AIM_X - d.R.x)) };
@@ -1038,16 +1299,18 @@ function update(dt) {
   stepFx(dt);
   // the bowler: running in and following through, then walking back to his mark
   const bw = G.bowler, s = d.t0 == null ? Infinity : G.time - d.t0;
+  bw.body = null;  // a jointed body when running in or walking back; otherwise he is drawn from bw.pose like a fielder
   if (d.stage !== 'wait' && s < d.runT + .4) {
     const at = bowlerAt(d, s);
-    bw.x = at.x; bw.yaw = at.yaw; bw.pose = at.pose;
+    bw.x = at.x; bw.yaw = at.yaw; bw.body = at.body;
   } else if (d.stage === 'done' && d.timer <= DONE_T - HOLD_T || d.stage === 'wait') {
     const mark = { x: BOWLERS[nextType()].mark, y: BOWLER.y }, gx = mark.x - bw.x, gy = mark.y - bw.y, gap = Math.hypot(gx, gy);
     if (gap > .05) {
       const go = Math.min(gap, 3.6 * dt);
       bw.x += gx / gap * go; bw.y += gy / gap * go;
       bw.yaw = Math.atan2(gy, gx);
-      bw.pose = walkPose(7, .14);
+      bw.walk = (bw.walk || 0) + go;
+      bw.body = gaitBody(bw.x, bw.y, bw.yaw, bw.walk);
     } else {
       bw.x = mark.x; bw.y = mark.y;
       bw.yaw = BOWLER_YAW;
@@ -1059,6 +1322,22 @@ function update(dt) {
 }
 
 /* ---------- drawing ---------- */
+/* the bowler is always drawn jointed: his run-up and walk come as bodies, fielding poses are converted. When the
+   source changes (run-up to standing, walking to the mark), he blends across for FADE_T instead of snapping */
+const FADE_T = .14;
+function drawBowler() {
+  const bw = G.bowler;
+  let body = bw.body || poseBody(bw.x, bw.y, bw.yaw, bw.pose);
+  // (no blend across a jump, such as a test snapping him to his mark)
+  if (bw.drawn && body.kind !== bw.drawn.kind) bw.fade = vLen(vSub(body.pelvis, bw.drawn.pelvis)) < 1 ? { from: bw.drawn, t0: G.time } : null;
+  if (bw.fade) {
+    const u = (G.time - bw.fade.t0) / FADE_T;
+    if (u >= 1 || u < 0) bw.fade = null;
+    else body = mixBody(bw.fade.from, body, ease(u));
+  }
+  bw.drawn = body;
+  return drawBody(body, bw.palette).handR;
+}
 function drawFigure(p, pose) {
   return figure(p.x, p.y, p.yaw, { scale: FIG_SCALE, ...pose }, p.palette, dynamicAdd);
 }
@@ -1220,7 +1499,7 @@ function draw() {
   zb.set(bakedZ);
   pendingShadows.length = 0;
   const d = G.del;
-  const hand = drawFigure(G.bowler, G.bowler.pose), held = G.ball && G.ball.held;
+  const hand = drawBowler(), held = G.ball && G.ball.held;
   if (held === G.bowler) Object.assign(G.ball, { x: hand[0], y: hand[1], z: hand[2] });
   for (const f of G.fielders) {
     const h = drawFigure(f, f.pose);
