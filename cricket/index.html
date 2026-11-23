@@ -85,6 +85,36 @@ const BRICK = { w: .22, l: .5, h: .17 };                        // one brick: w 
 const STUMP_BRICKS = 4, STUMPS_Z = STUMP_BRICKS * BRICK.h;      // the stack's height
 const FIG_SCALE = 1;
 
+/* ---------- bowling and batting ----------
+   Times are seconds and speeds are world units per second. +y is the off side for the right-handed batter,
+   so a ball that nips "in" moves towards -y (the leg side) after the bounce and one that goes "away" moves to +y. */
+const BALL_R = .2, BALL_COLOR = [216, 236, 72], GRAVITY = 12;  // a tennis ball, drawn a little large so it reads
+const RELEASE_X = -4.4;                            // the bowler's front foot lands just behind the chalk line
+const CONTACT_X = 6.9;                             // the bat meets the ball a stride in front of the batter
+const STUMPS_FACE = STUMPS_X - BRICK.w / 2 - .05;  // the front of the brick stack, allowing for the stagger
+const BOWLED_HALF = .3;                            // a missed ball whose centre passes this close to PITCH_Y hits the bricks
+const ARM_RELEASE = -3.4;                          // bowling arm just past vertical, swinging over the top
+/* the two bowler types. mark: where the run-up starts. run: run-up speed. stride: leg cycle rate. speed: ball
+   speed out of the hand; after: the fraction it keeps off the pitch. bounce: ball height at the stumps.
+   pitch: the range of pitching spots along x. move: how far the ball has moved sideways by the time it reaches
+   the stumps. window: |press - arrival| limits for perfect, good and mistimed; anything wider is a miss. */
+const BOWLERS = {
+  fast: { mark: -11, run: 6.8, stride: 10, step: .3, lean: .22, deliver: .3, speed: 15, after: .85, bounce: .55, pitch: [2.6, 4.8], move: [.4, .5], moves: ['in', 'away', 'none'], window: [.03, .055, .09] },
+  spin: { mark: -6.8, run: 2.4, stride: 6, step: .16, lean: .06, deliver: .4, speed: 9.5, after: .8, bounce: .42, pitch: [1.6, 4.2], move: [.6, .8], moves: ['in', 'away'], window: [.045, .09, .15] },
+};
+// where the ball is aimed at the stumps before any movement, relative to PITCH_Y
+const LINES = { stumps: [-.06, .06], off: [.55, .68], leg: [-.68, -.55] };
+const LINE_ODDS = ['stumps', 'stumps', 'off', 'off', 'leg'];
+const AGAINST_LINE = .65;                          // timing windows shrink by this when you hit against the line
+const GRADES = ['perfect', 'good', 'mistimed', 'miss'];
+// the 8 screen compass directions from the batter, and the same directions in world (x, y)
+const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const DIR_WORLD = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+const LEG_SIDE = [0, 1, 2], OFF_SIDE = [4, 5, 6];  // N, NE, E go to leg (-y); S, SW, W go to the off side (+y)
+const CHORD_T = .06;                               // two arrow keys pressed this close together make a diagonal
+const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
+const ROSE_IN = 15, ROSE_OUT = 23, FLASH_T = .45;  // the direction guide around the batter, in canvas pixels
+
 const SKIN = [[222, 170, 132], [196, 146, 110], [170, 120, 88], [128, 88, 64], [150, 104, 74], [214, 164, 128]];
 const HAIR = [[38, 28, 24], [30, 26, 24], [60, 44, 34], [24, 22, 22], [52, 40, 32], [36, 30, 28]];
 /* 1992 World Cup kits, reduced to each team's body colour. The real shirts also had a blue / green /
@@ -370,14 +400,6 @@ function washingLine() {
     for (let s = -half * len / 10; s <= half * len / 10; s += .3) castShadow(p[0] + ux * s, p[1] + uy * s, p[2] - drop / 2, .3);
   }
 }
-// the batter's stumps are a stack of bricks, staggered like a gully wicket
-function brickStack(x, y, count) {
-  for (let k = 0; k < count; k++) {
-    const off = (k % 2 ? .05 : -.04), z = k * BRICK.h;
-    box(x - BRICK.w / 2 + off * .4, y - BRICK.l / 2 + off, z, x + BRICK.w / 2 + off * .4, y + BRICK.l / 2 + off, z + BRICK.h - .02, BRICKWORK, 30 + k);
-  }
-  for (let z = .1; z < count * BRICK.h; z += .15) castShadow(x, y, z, .3);
-}
 function bake() {
   zb.fill(-1e9);
   pix.fill(rgb(255, 255, 255));
@@ -406,7 +428,6 @@ function bake() {
   bicycle(-1.1, .12);
   dog(4.7, WALL_Y + .62);
   drum(BACKSTOP.x, BACKSTOP.y, BACKSTOP.r, BACKSTOP.h, [150, 70, 48], [.25, .75]);
-  brickStack(STUMPS_X, PITCH_Y, STUMP_BRICKS);
   box(BRICK_X - BRICK.w / 2, PITCH_Y - BRICK.l / 2, 0, BRICK_X + BRICK.w / 2, PITCH_Y + BRICK.l / 2, BRICK.h, BRICKWORK, 40);
   castShadow(BRICK_X, PITCH_Y, .08, .3);
   // two kids watching from the blue door's step
@@ -438,7 +459,13 @@ const G = {
   batter: person(BATTER, 0, Math.PI / 2, POSE_BATTER),
   bowler: person(BOWLER, 1, facing(BOWLER, BATTER), POSE_BOWLER),
   fielders: FIELDERS.map((s, k) => ({ name: s.name, ...person(s, k + 2, facing(s, BATTER), POSE_FIELDER) })),
+  // bowling: del is the current delivery (see bowl()), ball is what is drawn, last is the latest ball's result
+  del: { stage: 'wait', timer: 0 }, ball: null, last: null, history: [],
+  balls: 0, over: 0, ballInOver: 0, overType: 'fast',
+  stumps: { down: false, t: 0, seed: 0 },
+  chord: null, auto: true, frozen: false, force: {},
 };
+G.batter.swing = null;
 // dress the batter in your kit and the fielding side in the rival's (drawn from the other eight if not given)
 function setTeams(youId, rivalId) {
   const you = TEAMS.find(t => t.id === youId);
@@ -465,17 +492,241 @@ function setStatus(text) {
   nodes.status.textContent = text;
 }
 
+/* ---------- bowling ----------
+   A delivery goes wait -> runup -> flight -> done -> wait. Everything about a ball is planned in bowl() when the
+   run-up starts, so the marker can show where it will pitch and the flight can be read off analytically by time:
+   straight from the hand to the pitching spot, then straight from there towards its moved line at the stumps. */
+function mulberry32(a) {
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+let rng = mulberry32(Math.random() * 2 ** 32 >>> 0);
+const range = ([a, b]) => lerp(a, b, rng());
+const pickOne = list => list[Math.floor(rng() * list.length)];
+const lineOf = y => y - PITCH_Y > BOWLED_HALF ? 'off' : y - PITCH_Y < -BOWLED_HALF ? 'leg' : 'stumps';
+const nextType = () => G.ballInOver >= 6 ? (G.overType === 'fast' ? 'spin' : 'fast') : G.overType;
+
+const walkPose = (rate, step) => { const w = Math.sin(G.time * rate); return { stance: .08 + step * Math.abs(w), armR: w * .5, armL: -w * .5 }; };
+// where the bowler is and how he stands, s seconds after the run-up started
+function bowlerAt(d, s) {
+  const B = BOWLERS[d.type], yaw = facing(BOWLER, BATTER);
+  if (s < d.runT) {
+    const x = lerp(d.mark, RELEASE_X, clamp(s / d.runT, 0, 1)), into = s - (d.runT - B.deliver);
+    if (into < 0) {
+      const w = Math.sin(s * B.stride);
+      return { x, yaw, pose: { stance: .08 + B.step * Math.abs(w), lean: B.lean, armR: w * .7, armL: -w * .7 } };
+    }
+    // the delivery stride: front arm up, bowling arm coming over the top
+    const u = into / B.deliver;
+    return { x, yaw, pose: { stance: .3, lean: lerp(-.08, B.lean + .1, u), armR: lerp(-.4, ARM_RELEASE, u), armL: lerp(2.6, .4, u) } };
+  }
+  // the follow-through carries on down the pitch and the arm finishes across the body
+  const v = clamp((s - d.runT) / .4, 0, 1);
+  return { x: RELEASE_X + ease(v) * (d.type === 'fast' ? 1.3 : .6), yaw, pose: { stance: lerp(.3, .18, v), lean: lerp(B.lean + .1, .3, v), armR: lerp(ARM_RELEASE, -5.6, v), armL: lerp(.4, -.3, v) } };
+}
+// start a delivery now. opts (and G.force) may fix: type 'fast'|'spin', line 'stumps'|'off'|'leg', move 'in'|'away'|'none',
+// amount (sideways movement at the stumps), offset (aim at the stumps relative to PITCH_Y), length (pitching x)
+function bowl(opts = {}) {
+  if (G.phase === 'pick') return null;
+  const f = { ...G.force, ...opts };
+  if (G.ballInOver >= 6) {
+    G.over++; G.ballInOver = 0;
+    G.overType = G.overType === 'fast' ? 'spin' : 'fast';
+    setStatus(G.overType === 'fast' ? 'fast bowler this over' : 'spinner this over');
+  }
+  const type = f.type || G.overType, B = BOWLERS[type];
+  const line = f.line || pickOne(LINE_ODDS);
+  const move = f.move || pickOne(B.moves);
+  const amount = move === 'none' ? 0 : f.amount != null ? f.amount : range(B.move);
+  const aim = PITCH_Y + (f.offset != null ? f.offset : range(LINES[line]));
+  const px = f.length != null ? f.length : range(B.pitch);
+  G.balls++; G.ballInOver++;
+  const d = { stage: 'runup', n: G.balls, type, line, move, amount, aim, t0: G.time, mark: B.mark, runT: (RELEASE_X - B.mark) / B.run, swing: null, hitAt: null, bounced: false };
+  // the ball leaves the bowling hand at the top of the delivery stride
+  const rel = bowlerAt(d, d.runT);
+  const hand = figure(rel.x, BOWLER.y, rel.yaw, { scale: FIG_SCALE, ...rel.pose }, G.bowler.palette, () => {});
+  d.R = { x: hand[0], y: hand[1], z: hand[2] };
+  // it pitches on the straight line from the hand to its aim at the stumps
+  d.P = { x: px, y: lerp(d.R.y, aim, (px - d.R.x) / (STUMPS_X - d.R.x)) };
+  d.t1 = Math.hypot(d.P.x - d.R.x, d.P.y - d.R.y) / B.speed;
+  d.vz1 = (BALL_R - d.R.z + GRAVITY * d.t1 * d.t1 / 2) / d.t1;
+  // off the pitch it heads for its moved line at the stumps
+  d.end = aim + (move === 'in' ? -amount : move === 'away' ? amount : 0);
+  const ex = STUMPS_X - d.P.x, ey = d.end - d.P.y, el = Math.hypot(ex, ey);
+  d.u = { x: ex / el, y: ey / el };
+  d.v2 = B.speed * B.after;
+  const after = x => (x - d.P.x) / (d.v2 * d.u.x), tS = after(STUMPS_X);
+  d.vz2 = (B.bounce - BALL_R + GRAVITY * tS * tS / 2) / tS;
+  d.tRelease = d.t0 + d.runT;
+  d.tPitch = d.tRelease + d.t1;
+  d.tContact = d.tPitch + after(CONTACT_X);
+  d.tStumps = d.tPitch + after(STUMPS_FACE - BALL_R);
+  G.del = d;
+  G.ball = null;
+  G.stumps.down = false;
+  G.bowler.x = d.mark;
+  return d;
+}
+function ballAt(d, t) {
+  const s = t - d.tRelease;
+  if (s < d.t1) {
+    const k = s / d.t1;
+    return { x: lerp(d.R.x, d.P.x, k), y: lerp(d.R.y, d.P.y, k), z: d.R.z + d.vz1 * s - GRAVITY * s * s / 2 };
+  }
+  const q = s - d.t1, v = d.v2 * q;
+  return { x: d.P.x + d.u.x * v, y: d.P.y + d.u.y * v, z: BALL_R + d.vz2 * q - GRAVITY * q * q / 2, vx: d.u.x * d.v2, vy: d.u.y * d.v2, vz: d.vz2 - GRAVITY * q };
+}
+function gradeOf(dt, win) {
+  const a = Math.abs(dt);
+  return a <= win[0] ? 0 : a <= win[1] ? 1 : a <= win[2] ? 2 : 3;
+}
+/* one swing per ball, in direction dir (0-7, see DIRS), pressed at time t. The press is graded against the ball's
+   arrival at the bat. Hitting against the line narrows the window; a ball that moved off the pitch is graded one
+   step worse unless the timing was perfect. Returns the swing, or null when there is nothing to swing at. */
+function swingAt(dir, t = G.time) {
+  const d = G.del;
+  if (G.phase === 'pick' || d.stage !== 'flight' || d.swing || t >= d.tStumps) return null;
+  const B = BOWLERS[d.type], lineY = ballAt(d, d.tContact).y, line = lineOf(lineY);
+  const against = line === 'off' && LEG_SIDE.includes(dir) || line === 'leg' && OFF_SIDE.includes(dir);
+  const win = B.window.map(w => w * (against ? AGAINST_LINE : 1));
+  const dt = t - d.tContact, moved = d.move !== 'none';
+  let grade = gradeOf(dt, win);
+  if (moved && grade > 0 && grade < 3) grade++;
+  const hitAt = Math.max(t, d.tContact);
+  if (hitAt >= d.tStumps) grade = 3;
+  d.swing = { dir, t, dt, grade, side: grade === 0 ? null : dt < 0 ? 'early' : 'late', against, moved, line };
+  if (grade < 3) d.hitAt = hitAt;
+  G.batter.swing = { t0: t, dir, lineY };
+  return d.swing;
+}
+// the swing met the ball. Placeholder until task 4: the ball just runs off in the chosen direction
+function strike(d) {
+  const at = ballAt(d, d.hitAt), sw = d.swing, w = DIR_WORLD[sw.dir], n = Math.hypot(w[0], w[1]);
+  const speed = [8, 6.5, 4][sw.grade];
+  G.ball = { x: at.x, y: at.y, z: at.z, vx: w[0] / n * speed, vy: w[1] / n * speed, vz: [2.4, 2, 3][sw.grade], life: .9 };
+  finish(d, 'hit');
+}
+// the ball reached the bricks without being hit: it either knocks them over or carries on into the drum
+function passStumps(d) {
+  const b = ballAt(d, d.tStumps);
+  // judged on its line at the bricks, after any movement
+  if (Math.abs(d.end - PITCH_Y) <= BOWLED_HALF) {
+    G.stumps = { down: true, t: d.tStumps, seed: d.n };
+    G.ball = { x: b.x, y: b.y, z: b.z, vx: -1.4, vy: (b.y - PITCH_Y) * 3, vz: 1.2 };
+    return finish(d, 'bowled');
+  }
+  // there is no keeper: it skips on and thuds into the oil drum behind the stumps
+  const ty = clamp(b.y, BACKSTOP.y - BACKSTOP.r * .6, BACKSTOP.y + BACKSTOP.r * .6);
+  const dx = BACKSTOP.x - b.x, dy = ty - b.y, n = Math.hypot(dx, dy), v = d.v2 * .8;
+  G.ball = { x: b.x, y: b.y, z: b.z, vx: dx / n * v, vy: dy / n * v, vz: Math.max(b.vz, .8) };
+  finish(d, 'backstop');
+}
+function finish(d, result) {
+  d.stage = 'done';
+  d.timer = DONE_T;
+  const sw = d.swing;
+  G.last = {
+    n: d.n, type: d.type, line: d.line, move: d.move, amount: d.amount, pitch: { ...d.P }, end: d.end,
+    dir: sw ? DIRS[sw.dir] : null, grade: sw ? GRADES[sw.grade] : null, side: sw ? sw.side : null,
+    dt: sw ? sw.dt : null, against: sw ? sw.against : false, result,
+  };
+  G.history.push(G.last);
+  if (result === 'hit') setStatus(GRADES[sw.grade] + (sw.side ? ' (' + sw.side + ')' : '') + ' · ' + DIRS[sw.dir]);
+  else if (result === 'bowled') setStatus(sw ? 'missed it · bowled' : 'bowled');
+  else setStatus(sw ? 'swing and a miss' : 'beaten · into the drum');
+}
+// a loose ball: gravity, bounces off the paving, and the drum stops it dead
+function stepLoose(b, dt) {
+  b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt; b.vz -= GRAVITY * dt;
+  if (b.z < BALL_R) {
+    b.z = BALL_R;
+    if (b.vz < -1) { b.vz *= -.45; b.vx *= .8; b.vy *= .8; }
+    else {
+      b.vz = 0;
+      const sp = Math.hypot(b.vx, b.vy), next = Math.max(0, sp - 4 * dt);
+      if (sp > 0) { b.vx *= next / sp; b.vy *= next / sp; }
+    }
+  }
+  const dx = b.x - BACKSTOP.x, dy = b.y - BACKSTOP.y, dist = Math.hypot(dx, dy), reach = BACKSTOP.r + BALL_R;
+  if (dist < reach && b.z < BACKSTOP.h + BALL_R) {
+    b.x = BACKSTOP.x + dx / dist * reach; b.y = BACKSTOP.y + dy / dist * reach;
+    b.vx = dx / dist * .5; b.vy = dy / dist * .5; b.vz = Math.min(b.vz, 0);
+  }
+  if (b.x < WALL_X + BALL_R) { b.x = WALL_X + BALL_R; b.vx = Math.abs(b.vx) * .3; }
+  if (b.y < WALL_Y + BALL_R) { b.y = WALL_Y + BALL_R; b.vy = Math.abs(b.vy) * .3; }
+  if (b.life != null) b.life -= dt;
+}
+// turn the arrow keys pressed since the chord started into one of the 8 directions
+function commitChord() {
+  const c = G.chord;
+  G.chord = null;
+  let sx = 0, sy = 0;
+  for (const k of c.keys) { sx += ARROWS[k][0]; sy += ARROWS[k][1]; }
+  if (sx || sy) swingAt(dirFromScreen(sx, sy), c.t0);
+}
+function resetDelivery() {
+  G.del = { stage: 'wait', timer: .6 };
+  G.ball = null; G.chord = null; G.batter.swing = null;
+  G.stumps.down = false;
+  G.balls = 0; G.over = 0; G.ballInOver = 0;
+  G.overType = rng() < .5 ? 'fast' : 'spin';
+}
+
 /* ---------- update ---------- */
 function update(dt) {
   G.time += dt;
+  if (G.phase === 'pick') return;
+  const d = G.del;
+  // a pending chord is graded from its first key, so it can wait for a second arrow until the ball is past the bat
+  if (G.chord && (G.time - G.chord.t0 >= CHORD_T || d.stage === 'flight' && G.time >= d.tStumps)) commitChord();
+  if (d.stage === 'runup' && G.time >= d.tRelease) d.stage = 'flight';
+  if (d.stage === 'flight') {
+    if (G.time >= d.tPitch) d.bounced = true;
+    if (d.hitAt != null && G.time >= d.hitAt) strike(d);
+    else if (G.time >= d.tStumps) passStumps(d);
+    else G.ball = ballAt(d, G.time);
+  } else if (d.stage === 'done') {
+    if (G.ball) {
+      stepLoose(G.ball, dt);
+      if (G.ball.life != null && G.ball.life <= 0) G.ball = null;
+    }
+    if ((d.timer -= dt) <= 0) { d.stage = 'wait'; d.timer = .5; G.ball = null; }
+  } else if (d.stage === 'wait') {
+    d.timer -= dt;
+  }
+  // the bowler: running in and following through, then walking back to his mark
+  const bw = G.bowler, s = d.t0 == null ? Infinity : G.time - d.t0;
+  if (d.stage !== 'wait' && s < d.runT + .4) {
+    const at = bowlerAt(d, s);
+    bw.x = at.x; bw.yaw = at.yaw; bw.pose = at.pose;
+  } else if (d.stage === 'done' || d.stage === 'wait') {
+    const mark = BOWLERS[nextType()].mark, gap = mark - bw.x;
+    if (Math.abs(gap) > .05) {
+      bw.x += Math.sign(gap) * Math.min(Math.abs(gap), 3.6 * dt);
+      bw.yaw = facing(BOWLER, BATTER) + (gap < 0 ? Math.PI : 0);
+      bw.pose = walkPose(7, .14);
+    } else {
+      bw.x = mark;
+      bw.yaw = facing(BOWLER, BATTER);
+      bw.pose = POSE_BOWLER;
+      if (d.stage === 'wait' && d.timer <= 0 && G.auto) bowl();
+    }
+  }
+  if (G.batter.swing && G.time - G.batter.swing.t0 > .9) G.batter.swing = null;
 }
 
 /* ---------- drawing ---------- */
 function drawFigure(p, pose) {
   return figure(p.x, p.y, p.yaw, { scale: FIG_SCALE, ...pose }, p.palette, dynamicAdd);
 }
+const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 // the batter waits in a high backlift: the top hand reaches across the chest to a grip by the back hip,
-// and the bat points up behind the back shoulder, clear of the body, so it reads against the paving
+// and the bat points up behind the back shoulder, clear of the body, so it reads against the paving.
+// A swing brings the bat down through the ball's line in front of him, then follows through towards the shot
 function drawBatter() {
   const p = G.batter, k = FIG_SCALE, pose = p.pose;
   let bone = 0;
@@ -484,29 +735,179 @@ function drawBatter() {
   const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), sx = -fy, sy = fx;
   const P = (f, s, z) => [p.x + (fx * f + sx * s) * k, p.y + (fy * f + sy * s) * k, z * k];
   const shZ = 1.28 - pose.crouch * .4 + Math.cos(pose.lean) * .95, shA = -pose.crouch * .15 + Math.sin(pose.lean) * .95;
-  const shoulder = P(shA, .36, shZ - .03), grip = P(shA + .05, -.5, shZ - .45), elbow = P(shA + .38, .05, shZ - .55);
+  const shoulder = P(shA, .36, shZ - .03);
+  let grip = P(shA + .05, -.5, shZ - .45), dir = [.32, -.12, 1];
+  const sw = p.swing;
+  if (sw) {
+    const s = G.time - sw.t0, back = { grip, dir };
+    // down through the line of the ball, just in front of the crease
+    const g1 = P(shA + .3, .55, shZ - .85), d1 = [CONTACT_X - g1[0], sw.lineY - g1[1], .3 - g1[2]];
+    // and on up towards the chosen direction
+    const w = DIR_WORLD[sw.dir], n = Math.hypot(w[0], w[1]);
+    const g2 = [p.x + w[0] / n * .45 * k, p.y + w[1] / n * .45 * k, (shZ - .2) * k], d2 = [w[0] / n, w[1] / n, .9];
+    const keys = [[0, back.grip, back.dir], [.07, g1, d1], [.25, g2, d2], [.6, g2, d2], [.9, back.grip, back.dir]];
+    for (let i = 1; i < keys.length; i++) {
+      if (s > keys[i][0] && i < keys.length - 1) continue;
+      const [t0, ga, da] = keys[i - 1], [t1, gb, db] = keys[i], u = ease(clamp((s - t0) / (t1 - t0), 0, 1));
+      grip = lerp3(ga, gb, u);
+      const la = Math.hypot(...da), lb = Math.hypot(...db);
+      dir = lerp3(da.map(v => v / la), db.map(v => v / lb), u);
+      break;
+    }
+  }
+  const elbow = [lerp(shoulder[0], grip[0], .5) + fx * .3 * k, lerp(shoulder[1], grip[1], .5) + fy * .3 * k, lerp(shoulder[2], grip[2], .5) - .08 * k];
   dynamicAdd(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
   dynamicAdd(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
-  const dir = [.32, -.12, 1], len = Math.hypot(...dir);
-  const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, grip[2] + dir[2] / len * d * k];
+  const len = Math.hypot(...dir);
+  const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, Math.max(.05, grip[2] + dir[2] / len * d * k)];
   dynamicAdd(at(-.05), at(.36), .06 * k, .06 * k, () => GRIP);
   dynamicAdd(at(.4), at(1.22), .15 * k, .15 * k, () => BLADE);
+}
+// the batter's stumps are a stack of bricks, staggered like a gully wicket. Bowled, they topple back off the stack:
+// the higher a brick sat, the further it goes
+function drawStumps() {
+  const st = G.stumps, u = st.down ? ease(clamp((G.time - st.t) / .35, 0, 1)) : 0;
+  for (let k = 0; k < STUMP_BRICKS; k++) {
+    const off = k % 2 ? .05 : -.04;
+    let x = STUMPS_X + off * .4, y = PITCH_Y + off, z = k * BRICK.h;
+    if (u) {
+      x += (.12 + k * .3) * u;
+      y += (hash(k, st.seed) - .5) * .7 * u;
+      z *= 1 - u;
+    }
+    box(x - BRICK.w / 2, y - BRICK.l / 2, z, x + BRICK.w / 2, y + BRICK.l / 2, z + BRICK.h - .02, BRICKWORK, 30 + k);
+    castShadow(x, y, z + .1, .28);
+  }
+}
+function drawBall(b) {
+  sphere(b.x, b.y, b.z, BALL_R, BALL_COLOR, 'gloss');
+  castShadow(b.x, b.y, b.z - BALL_R, BALL_R * .96, 1, 0);
+  if (b.z < BALL_R + .3) castShadow(b.x, b.y, 0, BALL_R * .8, 2, 0);
+}
+// a signal shape: yellow fill with an ink outline, so it reads on any surface
+function drawSignal(fill) {
+  const inside = new Set(fill.map(([x, y]) => (Math.round(y) * W + Math.round(x))));
+  const ink = [];
+  for (const [x, y] of fill) for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+    const j = (Math.round(y) + dy) * W + Math.round(x) + dx;
+    if (!inside.has(j)) ink.push([Math.round(x) + dx, Math.round(y) + dy]);
+  }
+  drawDots(ink, INK);
+  drawDots(fill, SIGNAL);
+}
+/* the landing marker: Tie-Break's target ring on the pitching spot. If the ball will move off the pitch, a
+   wedge on the ring's rim points the way it will go, longer for more movement; a ball that holds its line has none */
+function drawMarker(d) {
+  const p = project(d.P.x, d.P.y, 0), rx = 8, ry = 4;
+  const ring = [], outer = [];
+  for (let a = 0; a < 6.283; a += .12) {
+    ring.push([p.sx + Math.cos(a) * rx, p.sy + Math.sin(a) * ry], [p.sx + Math.cos(a) * (rx - 1), p.sy + Math.sin(a) * (ry - 1)]);
+    outer.push([p.sx + Math.cos(a) * (rx + 1), p.sy + Math.sin(a) * (ry + 1)]);
+  }
+  drawDots(outer, INK);
+  drawDots(ring, SIGNAL);
+  drawDots([[p.sx, p.sy], [p.sx - 1, p.sy], [p.sx + 1, p.sy], [p.sx, p.sy - 1], [p.sx, p.sy + 1]], SIGNAL);
+  if (d.move === 'none') return;
+  const q = project(d.P.x, d.P.y + (d.move === 'in' ? -1 : 1), 0);
+  let ux = q.sx - p.sx, uy = q.sy - p.sy;
+  const n = Math.hypot(ux, uy);
+  ux /= n; uy /= n;
+  const edge = 1 / Math.hypot(ux / rx, uy / ry), base = edge + 2, tip = base + 3 + d.amount * 8, half = 3;
+  const bx = p.sx + ux * base, by = p.sy + uy * base, tx = p.sx + ux * tip, ty = p.sy + uy * tip;
+  const fill = [];
+  for (let iy = Math.floor(Math.min(by, ty) - half - 1); iy <= Math.ceil(Math.max(by, ty) + half + 1); iy++) {
+    for (let ix = Math.floor(Math.min(bx, tx) - half - 1); ix <= Math.ceil(Math.max(bx, tx) + half + 1); ix++) {
+      const ox = ix + .5 - bx, oy = iy + .5 - by, along = ox * ux + oy * uy, across = Math.abs(-ox * uy + oy * ux);
+      if (along >= 0 && along <= tip - base && across <= half * (1 - along / (tip - base))) fill.push([ix, iy]);
+    }
+  }
+  drawSignal(fill);
+}
+// the 8 screen directions as faint spokes around the batter; the one you swing at lights up
+const roseCenter = () => project(BATTER.x, BATTER.y, 1.05);
+const dirFromScreen = (dx, dy) => (Math.round(Math.atan2(dx, -dy) / (Math.PI / 4)) + 8) % 8;
+function drawRose() {
+  const c = roseCenter(), cx = Math.round(c.sx), cy = Math.round(c.sy);
+  for (let k = 0; k < 8; k++) {
+    const ux = Math.sin(k * Math.PI / 4), uy = -Math.cos(k * Math.PI / 4);
+    for (let r = ROSE_IN; r <= ROSE_OUT; r += 2) {
+      const ix = Math.round(cx + ux * r), iy = Math.round(cy + uy * r);
+      if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue;
+      const i = iy * W + ix, v = pix[i];
+      pix[i] = rgb(lerp(v & 255, 255, .5), lerp(v >> 8 & 255, 255, .5), lerp(v >> 16 & 255, 255, .5));
+    }
+  }
+  const sw = G.batter.swing;
+  if (!sw || G.time - sw.t0 > FLASH_T) return;
+  const ux = Math.sin(sw.dir * Math.PI / 4), uy = -Math.cos(sw.dir * Math.PI / 4), fill = [];
+  for (let r = ROSE_IN - 1; r <= ROSE_OUT + 1; r++) {
+    const x = Math.round(cx + ux * r), y = Math.round(cy + uy * r);
+    fill.push([x, y], [x + (Math.abs(uy) > .5 ? 1 : 0), y + (Math.abs(uy) > .5 ? 0 : 1)]);
+  }
+  drawSignal(fill);
 }
 function draw() {
   pix.set(bakedPix);
   zb.set(bakedZ);
   pendingShadows.length = 0;
-  drawFigure(G.bowler, G.bowler.pose);
+  const d = G.del;
+  const hand = drawFigure(G.bowler, G.bowler.pose);
   for (const f of G.fielders) drawFigure(f, f.pose);
+  drawStumps();
   drawBatter();
+  if (d.stage === 'runup') drawBall({ x: hand[0], y: hand[1], z: hand[2] });
+  else if (G.ball) drawBall(G.ball);
   const windT = STILL ? 0 : Math.floor(G.time * WIND_FPS) / WIND_FPS;
   drawLeaves(windT);
   drawTufts(windT);
   flushShadows();
   applyShadows(bakedZ);
   shadeEdges();
+  if (G.phase !== 'pick') {
+    drawRose();
+    if ((d.stage === 'runup' || d.stage === 'flight') && !d.bounced) drawMarker(d);
+  }
   ctx.putImageData(image, 0, 0);
 }
+
+/* ---------- input ----------
+   One action per ball. Tap or click: the direction from the batter to that point, snapped to the nearest of the
+   8 screen directions. Keys: the arrows (two together for a diagonal), the numpad, or Q W E / A D / Z X C.
+   Nothing reaches the game while the team picker (or any other dialog) is open. */
+const ARROWS = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
+const KEY_DIRS = {
+  Numpad8: 0, Numpad9: 1, Numpad6: 2, Numpad3: 3, Numpad2: 4, Numpad1: 5, Numpad4: 6, Numpad7: 7,
+  KeyW: 0, KeyE: 1, KeyD: 2, KeyC: 3, KeyX: 4, KeyZ: 5, KeyA: 6, KeyQ: 7,
+};
+const heldArrows = new Set();
+const inputBlocked = () => G.phase === 'pick' || !!document.querySelector('dialog[open]');
+canvas.addEventListener('pointerdown', e => {
+  canvas.focus({ preventScroll: true });
+  if (inputBlocked()) return;
+  const r = canvas.getBoundingClientRect(), c = roseCenter();
+  const dx = (e.clientX - r.left) * W / r.width - c.sx, dy = (e.clientY - r.top) * H / r.height - c.sy;
+  if (Math.hypot(dx, dy) < 3) return;
+  swingAt(dirFromScreen(dx, dy));
+});
+canvas.addEventListener('keydown', e => {
+  if (inputBlocked() || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (ARROWS[e.key]) {
+    e.preventDefault();
+    if (e.repeat) return;
+    heldArrows.add(e.key);
+    if (!G.chord) G.chord = { t0: G.time, keys: new Set(heldArrows) };
+    G.chord.keys.add(e.key);
+    const keys = [...G.chord.keys];
+    if (keys.some(k => ARROWS[k][0]) && keys.some(k => ARROWS[k][1])) commitChord();
+    return;
+  }
+  const dir = KEY_DIRS[e.code];
+  if (dir == null) return;
+  e.preventDefault();
+  if (!e.repeat) swingAt(dir);
+});
+canvas.addEventListener('keyup', e => heldArrows.delete(e.key));
+canvas.addEventListener('blur', () => heldArrows.clear());
 
 /* ---------- sound ---------- */
 let muted = false;
@@ -550,7 +951,10 @@ teamGrid.addEventListener('keydown', e => {
 });
 // before the first pick there is nothing to go back to, so Escape cannot close the picker
 picker.addEventListener('cancel', e => { if (!picker.dataset.picked) e.preventDefault(); });
-picker.addEventListener('close', () => { if (G.phase === 'pick') G.phase = 'idle'; });
+picker.addEventListener('close', () => {
+  if (G.phase === 'pick') G.phase = 'idle';
+  canvas.focus({ preventScroll: true });
+});
 function openPicker() {
   G.phase = 'pick';
   const k = Math.max(0, picker.dataset.picked ? TEAMS.indexOf(G.you) : 0);
@@ -563,6 +967,7 @@ function chooseTeam(id) {
   picker.dataset.picked = '1';
   nodes.match.textContent = G.you.name + ' v ' + G.rival.name;
   setStatus(G.you.name + ' bat; ' + G.rival.name + ' field.');
+  resetDelivery();
   G.phase = 'idle';
   picker.close();
   canvas.focus();
@@ -575,7 +980,7 @@ fit();
 bake();
 let last = performance.now();
 function frame(now) {
-  update(Math.min(.04, (now - last) / 1000));
+  if (!G.frozen) update(Math.min(.04, (now - last) / 1000));
   last = now;
   draw();
   requestAnimationFrame(frame);
@@ -586,7 +991,33 @@ const LANE = {
   WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
-window.__cricket = { G, LANE, TEAMS, setTeams, chooseTeam, openPicker, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
+const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, AGAINST_LINE, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
+const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
+// test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
+window.__cricket = {
+  G, LANE, BOWLING, TEAMS, setTeams, chooseTeam, openPicker,
+  step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); },
+  freeze(on = true) { G.frozen = on; },
+  seed(n) { rng = mulberry32(n); },
+  auto(on = true) { G.auto = on; },
+  force(opts) { G.force = opts || {}; return G.force; },
+  bowl,
+  swing(dir) { return swingAt(dirIndex(dir)); },
+  ballAt(t) { return ballAt(G.del, t); },
+  // step in small slices until G.time reaches t exactly (or pred(G) is true), then draw once
+  advance(t, slice = 1 / 120) {
+    while (G.time < t - 1e-9) update(Math.min(slice, t - G.time));
+    draw();
+    return G.time;
+  },
+  until(pred, maxT = 10, slice = 1 / 120) {
+    const stop = G.time + maxT;
+    while (!pred(G) && G.time < stop) update(slice);
+    draw();
+    return pred(G);
+  },
+  dirFromScreen, roseCenter,
+};
 </script>
 </body>
 </html>
