@@ -29,6 +29,7 @@
   #this-over .w { color: var(--ink); font-weight: 600; }
   button { pointer-events: auto; font: inherit; color: var(--muted); background: none; border: 0; padding: 10px; margin: -10px; cursor: pointer; }
   button:hover, button:focus-visible { color: var(--ink); }
+  button:disabled { color: var(--muted); opacity: .45; cursor: default; }
   /* team picker: same chrome as the shell's rules popup (ink on white, 1px border, monospace) */
   #picker { width: min(420px, calc(100vw - 24px)); padding: 16px; border: 1px solid var(--ink); color: var(--ink); background: var(--paper); font: inherit; }
   #picker::backdrop { background: rgba(255, 255, 255, .72); }
@@ -618,6 +619,7 @@ const nodes = {
   need: document.getElementById('need'),
   thisOver: document.getElementById('this-over'),
   overRow: document.getElementById('over-row'),
+  team: document.getElementById('team'),
 };
 function setStatus(text) {
   if (text === G.status) return;
@@ -1324,6 +1326,8 @@ function renderHud() {
   nodes.target.textContent = 'target ' + m.target;
   const need = m.target - m.runs, left = OVERS * 6 - m.balls;
   const over = m.result && G.phase === 'over';
+  // from the deciding ball until its result is up, the match is decided but not yet shown: no change of team
+  nodes.team.disabled = !!m.result && G.phase !== 'over' && G.phase !== 'pick';
   nodes.need.classList.toggle('result', !!over);
   nodes.need.textContent = over ? resultText(m) : m.result ? '' : 'need ' + need + ' from ' + plural(left, 'ball');
 }
@@ -2717,6 +2721,8 @@ picker.addEventListener('close', () => {
   canvas.focus({ preventScroll: true });
 });
 function openPicker() {
+  // (not while the deciding ball plays out: the result and celebration are always seen first; see renderHud)
+  if (G.match && G.match.result && G.phase !== 'over' && G.phase !== 'pick') return;
   // mid-match, picking a team throws the score away, so say so, and offer the way back to the match as it was
   const mid = !!(G.match && !G.match.result && G.phase !== 'pick');
   picker.dataset.from = G.phase;
