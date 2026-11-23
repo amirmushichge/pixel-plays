@@ -139,13 +139,13 @@ const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const DIR_WORLD = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
 // right-hander: S, SW, W go to the leg side (+y) and N, NE, E to the off side (-y); a left-hander has them swapped
 const LEG_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG > 0), OFF_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG < 0);
-const CHORD_T = .06;                               // two arrow keys pressed this close together make a diagonal
 const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
 // the match: chase a random target in OVERS overs of six balls with WICKETS wickets. The rival's score is target - 1
 const OVERS = 5, WICKETS = 3, TARGET = [35, 70];
 const REPLAY_T = .6;                               // the result has to be up this long before a tap starts a new match
 const HOLD_T = .9;                                 // of that, how long everyone holds still (or celebrates) first
-const ROSE_IN = 15, ROSE_OUT = 23, FLASH_T = .45;  // the direction guide around the batter, in canvas pixels
+const ROSE_IN = 15, ROSE_OUT = 23;                 // the direction guide around the batter, in canvas pixels
+const STRAIGHT = 7;                                // NW: straight back down the lane past the bowler, the aim with no key held
 // the swing cue (see drawCue): shown for the last CUE_T s, solid for CUE_NOW s either side of the moment; tick gap, length
 const CUE_T = .6, CUE_NOW = .05, CUE_GAP = [.12, 1.5], CUE_TICK = .45;
 
@@ -583,7 +583,7 @@ const G = {
   del: { stage: 'wait', timer: 0 }, ball: null, last: null, history: [],
   balls: 0, over: 0, ballInOver: 0, overType: 'fast',
   stumps: { down: false, t: 0, seed: 0 },
-  chord: null, auto: true, frozen: false, force: {},
+  auto: true, frozen: false, force: {},
   timeouts: 0,  // how often a live ball hit the LIVE_MAX backstop
   react: null, fx: [],  // the latest wicket or boundary reaction { kind, t0 }, and contact sparks / dust in the air
   // the chase: target, runs, wickets, balls completed, this over's balls ('·', '1', '4', 'W', ...), and the result
@@ -1343,17 +1343,9 @@ function stepLoose(b, dt) {
   if (b.y < WALL_Y + BALL_R) { b.y = WALL_Y + BALL_R; b.vy = Math.abs(b.vy) * .3; }
   if (b.life != null) b.life -= dt;
 }
-// turn the arrow keys pressed since the chord started into one of the 8 directions
-function commitChord() {
-  const c = G.chord;
-  G.chord = null;
-  let sx = 0, sy = 0;
-  for (const k of c.keys) { sx += ARROWS[k][0]; sy += ARROWS[k][1]; }
-  if (sx || sy) swingAt(dirFromScreen(sx, sy), c.t0);
-}
 function resetDelivery() {
   G.del = { stage: 'wait', timer: .6 };
-  G.ball = null; G.chord = null; G.batter.swing = null;
+  G.ball = null; G.batter.swing = null;
   G.stumps.down = false; G.react = null; G.fx = [];
   G.balls = 0; G.over = 0; G.ballInOver = 0;
   G.overType = rng() < .5 ? 'fast' : 'spin';
@@ -1912,8 +1904,6 @@ function update(dt) {
   G.time += dt;
   if (G.phase === 'pick') return;
   const d = G.del;
-  // a pending chord is graded from its first key, so it can wait for a second arrow until the ball is past the bat
-  if (G.chord && (G.time - G.chord.t0 >= CHORD_T || d.stage === 'flight' && G.time >= d.tStumps)) commitChord();
   if (d.stage === 'runup' && G.time >= d.tRelease) d.stage = 'flight';
   if (d.stage === 'flight') {
     if (G.time >= d.tPitch && !d.bounced) { d.bounced = true; sfx('bounce', .8); }
@@ -2356,7 +2346,7 @@ function drawCue(d) {
   const b = G.ball, c = b && project(b.x, b.y, b.z), r = c && Math.abs(project(b.x, b.y, b.z + BALL_R).sy - c.sy) + 2;
   drawSignal(c ? fill.filter(([px, py]) => Math.hypot(px - c.sx, py - c.sy) > r) : fill);
 }
-// the 8 screen directions as faint spokes around the batter; the one you swing at lights up
+// the 8 screen directions as faint spokes around the batter, and an arrow on the one you aim at (aimDir())
 const roseCenter = () => project(BATTER.x, BATTER.y, 1.05);
 const dirFromScreen = (dx, dy) => (Math.round(Math.atan2(dx, -dy) / (Math.PI / 4)) + 8) % 8;
 function drawRose() {
@@ -2370,14 +2360,23 @@ function drawRose() {
       pix[i] = rgb(lerp(v & 255, 255, .5), lerp(v >> 8 & 255, 255, .5), lerp(v >> 16 & 255, 255, .5));
     }
   }
-  const sw = G.batter.swing;
-  if (!sw || G.time - sw.t0 > FLASH_T) return;
-  const ux = Math.sin(sw.dir * Math.PI / 4), uy = -Math.cos(sw.dir * Math.PI / 4), fill = [];
-  for (let r = ROSE_IN - 1; r <= ROSE_OUT + 1; r++) {
-    const x = Math.round(cx + ux * r), y = Math.round(cy + uy * r);
-    fill.push([x, y], [x + (Math.abs(uy) > .5 ? 1 : 0), y + (Math.abs(uy) > .5 ? 0 : 1)]);
+  // the aim: an arrow along its spoke in the full signal style (paper halo, ink outline, yellow), unlike the plain bar
+  // of the swing cue. It passes behind anything drawn this frame (the batter, his bat, the ball, a fielder)
+  const aim = aimDir(), ux = Math.sin(aim * Math.PI / 4), uy = -Math.cos(aim * Math.PI / 4);
+  const inside = new Set(), key = (x, y) => y * W + x;
+  const put = (r, s) => inside.add(key(Math.round(cx + ux * r - uy * s), Math.round(cy + uy * r + ux * s)));
+  for (let r = ROSE_IN; r <= ROSE_OUT + 3; r += .5) {
+    const w = r <= ROSE_OUT - 2 ? .5 : (ROSE_OUT + 3 - r) * .7;
+    for (let s = -w; s <= w + 1e-9; s += .5) put(r, s);
   }
-  drawSignal(fill);
+  const around = from => {
+    const out = new Set();
+    for (const i of from) for (const j of [i - 1, i + 1, i - W, i + W]) if (!inside.has(j) && !from.has(j)) out.add(j);
+    return out;
+  };
+  const ink = around(inside), halo = around(new Set([...inside, ...ink]));
+  const clear = i => i >= 0 && i < W * H && zb[i] === bakedZ[i];
+  for (const [set, color] of [[halo, PAPER], [ink, INK], [inside, SIGNAL]]) for (const i of set) if (clear(i)) pix[i] = color;
 }
 function draw() {
   pix.set(bakedPix);
@@ -2411,15 +2410,35 @@ function draw() {
 }
 
 /* ---------- input ----------
-   One action per ball. Tap or click: the direction from the batter to that point, snapped to the nearest of the
-   8 screen directions. Keys: the arrows (two together for a diagonal), the numpad, or Q W E / A D / Z X C.
-   Nothing reaches the game while the team picker (or any other dialog) is open. */
+   Aim, then hit: one swing per ball. Keyboard: hold the arrows (two for a diagonal, opposite ones cancel), or a
+   numpad or Q W E / A D / Z X C key, and press Space or Enter to swing that way; with no direction key held the
+   swing goes straight. Mouse: the pointer's direction from the batter, snapped to the nearest of the 8, and a click
+   swings that way. Touch has no hover, so a tap aims and swings at once. A press is graded at the moment it was
+   made (pressTime). Nothing reaches the game while the team picker (or any other dialog) is open. */
 const ARROWS = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] };
 const KEY_DIRS = {
   Numpad8: 0, Numpad9: 1, Numpad6: 2, Numpad3: 3, Numpad2: 4, Numpad1: 5, Numpad4: 6, Numpad7: 7,
   KeyW: 0, KeyE: 1, KeyD: 2, KeyC: 3, KeyX: 4, KeyZ: 5, KeyA: 6, KeyQ: 7,
 };
-const heldArrows = new Set();
+const isHitKey = e => e.code === 'Space' || e.key === ' ' || e.key === 'Enter';
+const heldArrows = new Set(), heldDirKeys = [];   // the direction keys held now; the last pressed letter key wins
+/* what the highlight shows and which way each input swings. Every key press, pointer move and tap takes a number
+   from inputSeq, so the guide can tell which came last */
+let inputSeq = 0, keySeq = 0, moveSeq = 0, pointerOver = false, pointerDir = STRAIGHT, tapAim = null, hookAim = null;
+function keyDir() {
+  if (heldDirKeys.length) return KEY_DIRS[heldDirKeys[heldDirKeys.length - 1]];
+  let sx = 0, sy = 0;
+  for (const k of heldArrows) { sx += ARROWS[k][0]; sy += ARROWS[k][1]; }
+  if (sx || sy) return dirFromScreen(sx, sy);
+  return hookAim != null ? hookAim : STRAIGHT;
+}
+const keysHeld = () => heldArrows.size > 0 || heldDirKeys.length > 0 || hookAim != null;
+function aimDir() {
+  if (keysHeld()) return keyDir();
+  if (tapAim && tapAim.del === G.del && tapAim.seq > Math.max(keySeq, moveSeq)) return tapAim.dir;
+  if (pointerOver && moveSeq > keySeq) return pointerDir;
+  return STRAIGHT;
+}
 const inputBlocked = () => G.phase === 'pick' || !!document.querySelector('dialog[open]');
 /* the game time of an input event. G.time is the time of the last frame; the press happened e.timeStamp - lastFrame
    later on the same clock, so a press is graded at the moment it was made, not at the frame that handles it */
@@ -2439,47 +2458,63 @@ addEventListener('click', e => {
   }
 }, true);
 addEventListener('close', guardFrom, true);
+// the screen direction from the batter to a pointer event, or null right on top of him
+function pointerAim(e) {
+  const r = canvas.getBoundingClientRect(), c = roseCenter();
+  const dx = (e.clientX - r.left) * W / r.width - c.sx, dy = (e.clientY - r.top) * H / r.height - c.sy;
+  return Math.hypot(dx, dy) < 3 ? null : dirFromScreen(dx, dy);
+}
+// a mouse aims as it moves; touch (and a pen) do not hover, so a tap aims and swings at once
+const hovers = e => e.pointerType === 'mouse';
+canvas.addEventListener('pointermove', e => {
+  if (!hovers(e)) return;
+  pointerOver = true;
+  if (inputBlocked()) return;
+  const dir = pointerAim(e);
+  if (dir == null) return;
+  pointerDir = dir;
+  moveSeq = ++inputSeq;
+});
+canvas.addEventListener('pointerleave', e => { if (hovers(e)) pointerOver = false; });
 canvas.addEventListener('pointerdown', e => {
   canvas.focus({ preventScroll: true });
   if (performance.now() < guardUntil) return;
   if (inputBlocked()) return;
   if (replay()) { openPress = e.pointerId; guardFrom(); return; }
   if (G.phase === 'over') return;
-  const r = canvas.getBoundingClientRect(), c = roseCenter();
-  const dx = (e.clientX - r.left) * W / r.width - c.sx, dy = (e.clientY - r.top) * H / r.height - c.sy;
-  if (Math.hypot(dx, dy) < 3) return;
-  swingAt(dirFromScreen(dx, dy), pressTime(e));
+  const dir = pointerAim(e);
+  if (dir == null) return;
+  if (hovers(e)) { pointerOver = true; pointerDir = dir; moveSeq = ++inputSeq; }
+  else tapAim = { dir, del: G.del, seq: ++inputSeq };
+  swingAt(dir, pressTime(e));
 });
-// keys work wherever focus is on the page (after the mute button, say), except in a text field or on a link
+/* keys work wherever focus is on the page (after the mute button, say), except in a text field or on a link.
+   Space always belongs to the game outside a dialog: it never scrolls and never presses a focused button (the
+   browser presses a button on Space's keyup, so that is cancelled too). Enter on a button still presses it */
+let spaceTaken = false;
 addEventListener('keydown', e => {
   if (inputBlocked() || e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input, textarea, select, a')) return;
-  // after the result any key of the game (or Enter / Space) plays again, unless it is on a button (mute, change team)
-  if (G.phase === 'over') {
-    if (e.repeat || !(ARROWS[e.key] || KEY_DIRS[e.code] != null || e.key === 'Enter' || e.key === ' ')) return;
-    if (e.target.closest('button') && !ARROWS[e.key] && KEY_DIRS[e.code] == null) return;
-    e.preventDefault();
-    replay();
-    return;
-  }
-  if (ARROWS[e.key]) {
-    e.preventDefault();
-    if (e.repeat) return;
-    heldArrows.add(e.key);
-    // an arrow pressed before the ball is bowled does nothing, so it cannot use up the swing once the ball is in flight
-    if (!G.chord && G.del.stage !== 'flight') return;
-    if (!G.chord) G.chord = { t0: pressTime(e), keys: new Set(heldArrows) };
-    G.chord.keys.add(e.key);
-    const keys = [...G.chord.keys];
-    if (keys.some(k => ARROWS[k][0]) && keys.some(k => ARROWS[k][1])) commitChord();
-    return;
-  }
-  const dir = KEY_DIRS[e.code];
-  if (dir == null) return;
+  const dirKey = !!ARROWS[e.key] || KEY_DIRS[e.code] != null, hit = isHitKey(e);
+  if (!dirKey && !hit) return;
+  if (hit && e.key === 'Enter' && e.target.closest('button')) return;
   e.preventDefault();
-  if (!e.repeat) swingAt(dir, pressTime(e));
+  if (hit && e.key !== 'Enter') spaceTaken = true;
+  keySeq = ++inputSeq;
+  if (ARROWS[e.key]) heldArrows.add(e.key);
+  else if (dirKey && !heldDirKeys.includes(e.code)) heldDirKeys.push(e.code);
+  if (e.repeat) return;
+  // after the result any key of the game (or Enter / Space) plays again
+  if (G.phase === 'over') { replay(); return; }
+  // a hit key swings in the keyboard's direction, timed as it goes down; a press before the ball is bowled does nothing
+  if (hit) swingAt(keyDir(), pressTime(e));
 });
-addEventListener('keyup', e => heldArrows.delete(e.key));
-addEventListener('blur', () => heldArrows.clear());
+addEventListener('keyup', e => {
+  heldArrows.delete(e.key);
+  const k = heldDirKeys.indexOf(e.code);
+  if (k >= 0) heldDirKeys.splice(k, 1);
+  if (spaceTaken && (e.code === 'Space' || e.key === ' ')) { spaceTaken = false; e.preventDefault(); }
+});
+addEventListener('blur', () => { heldArrows.clear(); heldDirKeys.length = 0; });
 
 /* ---------- sound ----------
    Web Audio, as in Tie-Break: short oscillator blips and filtered noise, no files. The context starts on the first
@@ -2705,7 +2740,7 @@ bake();
    stops, so nothing is bowled and no sound cue fires. Pausing never changes what a ball does:
    - a ball whose fate is still open (in the run-up, or in flight with no swing made and not yet at the bat) is taken
      back on the way out and the very same delivery is bowled again from the mark, so it cannot be re-rolled;
-   - once the batter has swung (or pressed a first arrow) or the ball is past the bat, everything stays frozen where
+   - once the batter has swung or the ball is past the bat, everything stays frozen where
      it was and carries on from there, so the outcome stands and counts once */
 const pausedNow = () => document.hidden || !!document.querySelector('dialog[open]');
 function checkPause() {
@@ -2719,7 +2754,7 @@ function checkPause() {
   }
   return !!G.paused;
 }
-const unplayed = d => d.stage === 'runup' || d.stage === 'flight' && !d.swing && !G.chord && G.time < d.tContact;
+const unplayed = d => d.stage === 'runup' || d.stage === 'flight' && !d.swing && G.time < d.tContact;
 function takeBack(d) {
   const u = d.undo;
   // rewind the random sequence to where this ball was drawn from: the next bowl() repeats type, line, length, movement
@@ -2727,8 +2762,8 @@ function takeBack(d) {
   G.balls--; G.over = u.over; G.ballInOver = u.ballInOver; G.overType = u.overType;
   if (G.match && u.thisOver) G.match.thisOver = u.thisOver;
   G.del = { stage: 'wait', timer: .6 };
-  G.ball = null; G.chord = null; G.batter.swing = null; G.stumps.down = false; G.react = null;
-  heldArrows.clear();
+  G.ball = null; G.batter.swing = null; G.stumps.down = false; G.react = null;
+  heldArrows.clear(); heldDirKeys.length = 0;
   setField(fieldFor(G.over), true);
   Object.assign(G.bowler, { x: d.mark, y: BOWLER.y, yaw: BOWLER_YAW, pose: POSE_BOWLER, body: null, drawn: null, fade: null, walk: 0 });
   setStatus(u.status);
@@ -2749,7 +2784,7 @@ const LANE = {
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
 const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, BOWLER_CATCH_R, BOWLER_CATCH_Z, BOWLER_HOT, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
-const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
+const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, STRAIGHT, DONE_T };
 const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
 // test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
 window.__cricket = {
@@ -2770,6 +2805,11 @@ window.__cricket = {
   outcome() { return G.last && { runs: G.last.runs, out: G.last.out, how: G.last.how, by: G.last.by }; },
   bowl,
   swing(dir) { return swingAt(dirIndex(dir)); },
+  // aim and hit separately, as the keyboard does: aim(dir) holds a direction (null lets go, which is straight),
+  // hit() is Space at G.time; aimed() is the direction the guide shows now
+  aim(dir) { hookAim = dir == null ? null : dirIndex(dir); return DIRS[aimDir()]; },
+  hit() { return swingAt(keyDir()); },
+  aimed: () => DIRS[aimDir()],
   ballAt(t) { return ballAt(G.del, t); },
   // step in small slices until G.time reaches t exactly (or pred(G) is true), then draw once
   advance(t, slice = 1 / 120) {
