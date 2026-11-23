@@ -250,7 +250,10 @@ function figure(px, py, yaw, pose, palette, addBone) {
   const P = (a, b, c) => [px + (fx * a + sx * b) * k, py + (fy * a + sy * b) * k, c * k + base];
   const add = (a, b, r0, r1, f) => addBone(a, b, r0 * k, r1 * k, f);
   const t = palette;
-  const shirt = z => (Math.floor(z * 3.2) % 2 ? t.shirt : t.stripe); // about 3px bands: thinner ones read as noise
+  // optional: palette.shirtAt(h) colours the shirt by height h above the feet in unscaled figure units
+  // (hips ~1.28, shoulders ~2.2); it must return the same array objects each call so their ramps are cached
+  const shirt = t.shirtAt ? z => t.shirtAt((z - base) / k)
+    : z => (Math.floor(z * 3.2) % 2 ? t.shirt : t.stripe); // about 3px bands: thinner ones read as noise
   const legs = () => t.legs, skin = () => t.skin;
   const crouch = pose.crouch || 0, lean = pose.lean || 0;
   const hipZ = 1.28 - crouch * .4;
