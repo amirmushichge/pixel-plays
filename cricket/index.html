@@ -201,25 +201,31 @@ const BOWLER_YAW = 0;                // he runs straight down the pitch, whichev
 /* field placings, one per over in a shuffled order, so the gaps move. Spots are given as [direction, distance]
    from the batter: the direction is an index into DIRS (fractions sit between two shot directions). The bowler is
    the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW).
+   The field is spread round the bat so the gaps are narrow: fielders stand 4.5 to 7 out, each on a shot's line or
+   between two, where he can cut off a hit along the ground and a lofted hit is still low enough to catch. (Deeper
+   is no harder: a fielder on the boundary only guards his own line.) The four placings guard different lines, so
+   the batter has to look where the gaps are each over; the glance and the corner are guarded in some of them.
    Nobody may stand between the camera and the batter, his bricks or the pitch (see hidesView), so the open
    corner straight down the screen (S) is guarded from the corner of the chalk, and the glance behind (SE) from
-   fine, off the line of the bricks. Any spot that would hide the view is nudged clear when the page loads.
-   The spots stay put on the screen for either HAND, so their names do not: byHand(right, left) names a spot (and a
-   placing) for the batter in HAND. The off and leg placings swap names but keep their order in FIELDS */
+   fine, out on the glance's line beyond the bricks. Any spot that would hide the view is nudged clear when the
+   page loads. The spots stay put on the screen for either HAND, so their names do not: byHand(right, left) names a
+   spot (and a placing) for the batter in HAND. The off and leg placings swap names but keep their order in FIELDS */
 const byHand = (right, left) => HAND === 'right' ? right : left;
 const spot = (name, k, r) => {
   const a = (225 + 45 * k) * Math.PI / 180;
   return { name, x: +(BATTER.x + Math.cos(a) * r).toFixed(2), y: +(BATTER.y + Math.sin(a) * r).toFixed(2) };
 };
 const CORNER = { name: 'deep corner', x: CHALK_X - .55, y: CHALK_Y - .6 };
-const FINE = { name: 'fine', x: 10.6, y: -3.9 };
+const FINE = { name: 'fine', x: 11.1, y: -2 };   // on the glance's line (the same for either HAND), beyond the drum
 const FIELDS = {
-  ring: [spot(byHand('midwicket', 'cover'), 5.8, 5.4), spot(byHand('cover', 'midwicket'), .5, 5), spot(byHand('point', 'square leg'), 1.5, 4.6), { ...CORNER }],  // in the gaps
-  // N, NE and E packed: the off side for a right-hander, the leg side for a left-hander
-  [byHand('off', 'leg')]: [spot(byHand('mid-off', 'mid-on'), 0, 5.6), spot(byHand('cover', 'midwicket'), 1, 4.8), spot(byHand('point', 'square leg'), 2, 4.6), spot(byHand('square leg', 'point'), 5, 5.3)],
-  // S, SW and W packed: the leg side for a right-hander, the off side for a left-hander
-  [byHand('leg', 'off')]: [{ ...CORNER }, spot(byHand('square leg', 'point'), 5, 5.3), spot(byHand('midwicket', 'cover'), 6, 5.4), spot(byHand('cover', 'midwicket'), 1, 5)],
-  deep: [spot(byHand('long-on', 'long-off'), 6.8, 14.8), spot(byHand('deep midwicket', 'deep cover'), 6, 6), { ...FINE }, { ...CORNER }],
+  // round the bat: N to E covered from between the lines, the glance, and SW
+  ring: [spot(byHand('cover point', 'midwicket'), .5, 4.5), spot(byHand('backward point', 'backward square'), 1.5, 4.5), { ...FINE }, spot(byHand('square leg', 'point'), 5, 6)],
+  // N, NE and E packed (the off side for a right-hander, the leg side for a left-hander), and the corner
+  [byHand('off', 'leg')]: [spot(byHand('mid-off', 'mid-on'), -.1, 5.2), spot(byHand('cover', 'midwicket'), .6, 4.5), spot(byHand('backward point', 'backward square'), 1.6, 4.4), { ...CORNER }],
+  // S, SW and W packed (the leg side for a right-hander, the off side for a left-hander), and NE
+  [byHand('leg', 'off')]: [{ ...CORNER }, spot(byHand('square leg', 'point'), 4.85, 6.1), spot(byHand('deep midwicket', 'deep cover'), 6, 7), spot(byHand('point', 'square leg'), 1, 4.5)],
+  // back on the boundaries: deep N, long down the lane, the corner and the glance
+  deep: [spot(byHand('deep cover', 'deep midwicket'), 0, 6.5), spot(byHand('long-on', 'long-off'), 6.8, 14.8), { ...CORNER }, { ...FINE }],
 };
 const FIELDERS = FIELDS.ring;                      // the field the lane starts with
 const FIELD_NAMES = Object.keys(FIELDS);
