@@ -31,9 +31,8 @@
   #teams button:hover { border-color: var(--ink); }
   #teams button:focus-visible { background: var(--ink); color: var(--paper); outline: none; }
   #teams button[aria-pressed="true"] { border-color: var(--ink); }
-  /* the kit as a swatch: the shared yoke stripes over the team's body colour */
-  .swatch { width: 30px; height: 22px; border: 1px solid var(--ink); background: linear-gradient(to bottom,
-      #285cce 0 3px, #fff 3px 4px, #229654 4px 7px, #fff 7px 8px, #d62c2c 8px 11px, var(--body) 11px); }
+  /* the kit as a swatch: a solid chip of the team's shirt colour */
+  .swatch { width: 30px; height: 22px; border: 1px solid var(--ink); background: var(--body); }
   .buttons { display: flex; gap: 20px; flex-shrink: 0; white-space: nowrap; }
 </style>
 </head>
@@ -88,11 +87,9 @@ const FIG_SCALE = 1;
 
 const SKIN = [[222, 170, 132], [196, 146, 110], [170, 120, 88], [128, 88, 64], [150, 104, 74], [214, 164, 128]];
 const HAIR = [[38, 28, 24], [30, 26, 24], [60, 44, 34], [24, 22, 22], [52, 40, 32], [36, 30, 28]];
-/* 1992 World Cup kits. Every team wore one template: a solid body colour, a contrasting collar, and a
-   band of blue / green / red stripes across the shoulders and upper chest that runs out along the tops
-   of the sleeves. The stripes are the same on every team, so the body colour carries the identity.
-   Collars are left out: at this size they cannot be the 3px a character pattern needs. */
-const YOKE = [[40, 92, 206], [34, 150, 84], [214, 44, 44]];
+/* 1992 World Cup kits, reduced to each team's body colour. The real shirts also had a blue / green /
+   red band across the shoulders, the same on every team; it is left out so the team colour reads at
+   figure size. */
 const TEAMS = [
   { id: 'aus', name: 'Australia', body: [244, 204, 40] },
   { id: 'eng', name: 'England', body: [140, 190, 236] },
@@ -104,6 +101,7 @@ const TEAMS = [
   { id: 'wi', name: 'West Indies', body: [118, 24, 46] },
   { id: 'zim', name: 'Zimbabwe', body: [210, 34, 34] },
 ];
+for (const t of TEAMS) t.legs = t.body.map(v => Math.round(v * .78)); // trousers: the body colour, a shade darker
 const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
 
 const BATTER = { x: 7.55, y: .15 };
@@ -425,20 +423,12 @@ function bake() {
 }
 
 /* ---------- game state ---------- */
-// idle poses; a kit's yoke is measured down from the shoulder line of the pose it is worn in
+// idle poses
 const POSE_BATTER = { crouch: .3, lean: .16, stance: .02, armR: .2, armL: .55 };
 const POSE_BOWLER = { stance: .12, armR: .2, armL: .1 };
 const POSE_FIELDER = { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 };
-const shoulderOf = pose => 1.28 - (pose.crouch || 0) * .4 + Math.cos(pose.lean || 0) * .95;
-// a figure palette for one team. shirtAt(h) gets the height above the feet in figure units:
-// three yoke stripes about 3px tall each from the shoulder cap down, then the body colour
-function kitPalette(team, pose) {
-  const top = shoulderOf(pose), [blue, green, red] = YOKE;
-  return {
-    shirt: team.body, stripe: team.body, legs: team.body,
-    shirtAt: h => h > top + .06 ? blue : h > top - .22 ? green : h > top - .5 ? red : team.body,
-  };
-}
+// a figure palette for one team: a solid shirt, and trousers a shade darker so the figure keeps its waist
+const kitPalette = team => ({ shirt: team.body, stripe: team.body, legs: team.legs });
 const person = (spot, k, yaw, pose) => ({ x: spot.x, y: spot.y, yaw, pose, palette: { skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
 const facing = (from, to) => Math.atan2(to.y - from.y, to.x - from.x);
 const G = {
@@ -455,7 +445,7 @@ function setTeams(youId, rivalId) {
   const others = TEAMS.filter(t => t !== you);
   const rival = others.find(t => t.id === rivalId) || others[Math.floor(Math.random() * others.length)];
   G.you = you; G.rival = rival;
-  const dress = (p, team) => { p.palette = { ...kitPalette(team, p.pose), skin: p.palette.skin, hair: p.palette.hair }; };
+  const dress = (p, team) => { p.palette = { ...kitPalette(team), skin: p.palette.skin, hair: p.palette.hair }; };
   dress(G.batter, you);
   for (const p of [G.bowler, ...G.fielders]) dress(p, rival);
   return { you: you.id, rival: rival.id };
@@ -495,7 +485,7 @@ function drawBatter() {
   const P = (f, s, z) => [p.x + (fx * f + sx * s) * k, p.y + (fy * f + sy * s) * k, z * k];
   const shZ = 1.28 - pose.crouch * .4 + Math.cos(pose.lean) * .95, shA = -pose.crouch * .15 + Math.sin(pose.lean) * .95;
   const shoulder = P(shA, .36, shZ - .03), grip = P(shA + .05, -.5, shZ - .45), elbow = P(shA + .38, .05, shZ - .55);
-  dynamicAdd(shoulder, elbow, .12 * k, .1 * k, byHeight(z => p.palette.shirtAt(z / k)));
+  dynamicAdd(shoulder, elbow, .12 * k, .1 * k, () => p.palette.shirt);
   dynamicAdd(elbow, grip, .09 * k, .08 * k, () => p.palette.skin);
   const dir = [.32, -.12, 1], len = Math.hypot(...dir);
   const at = d => [grip[0] + dir[0] / len * d * k, grip[1] + dir[1] / len * d * k, grip[2] + dir[2] / len * d * k];
