@@ -1257,21 +1257,27 @@ const KEY_DIRS = {
 };
 const heldArrows = new Set();
 const inputBlocked = () => G.phase === 'pick' || !!document.querySelector('dialog[open]');
+/* the game time of an input event. G.time is the time of the last frame; the press happened e.timeStamp - lastFrame
+   later on the same clock, so a press is graded at the moment it was made, not at the frame that handles it */
+const pressTime = e => G.frozen ? G.time : G.time + clamp((e.timeStamp - last) / 1000, 0, .04);
 canvas.addEventListener('pointerdown', e => {
   canvas.focus({ preventScroll: true });
   if (inputBlocked()) return;
   const r = canvas.getBoundingClientRect(), c = roseCenter();
   const dx = (e.clientX - r.left) * W / r.width - c.sx, dy = (e.clientY - r.top) * H / r.height - c.sy;
   if (Math.hypot(dx, dy) < 3) return;
-  swingAt(dirFromScreen(dx, dy));
+  swingAt(dirFromScreen(dx, dy), pressTime(e));
 });
-canvas.addEventListener('keydown', e => {
-  if (inputBlocked() || e.altKey || e.ctrlKey || e.metaKey) return;
+// keys work wherever focus is on the page (after the mute button, say), except in a text field or on a link
+addEventListener('keydown', e => {
+  if (inputBlocked() || e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input, textarea, select, a')) return;
   if (ARROWS[e.key]) {
     e.preventDefault();
     if (e.repeat) return;
     heldArrows.add(e.key);
-    if (!G.chord) G.chord = { t0: G.time, keys: new Set(heldArrows) };
+    // an arrow pressed before the ball is bowled does nothing, so it cannot use up the swing once the ball is in flight
+    if (!G.chord && G.del.stage !== 'flight') return;
+    if (!G.chord) G.chord = { t0: pressTime(e), keys: new Set(heldArrows) };
     G.chord.keys.add(e.key);
     const keys = [...G.chord.keys];
     if (keys.some(k => ARROWS[k][0]) && keys.some(k => ARROWS[k][1])) commitChord();
@@ -1280,10 +1286,10 @@ canvas.addEventListener('keydown', e => {
   const dir = KEY_DIRS[e.code];
   if (dir == null) return;
   e.preventDefault();
-  if (!e.repeat) swingAt(dir);
+  if (!e.repeat) swingAt(dir, pressTime(e));
 });
-canvas.addEventListener('keyup', e => heldArrows.delete(e.key));
-canvas.addEventListener('blur', () => heldArrows.clear());
+addEventListener('keyup', e => heldArrows.delete(e.key));
+addEventListener('blur', () => heldArrows.clear());
 
 /* ---------- sound ---------- */
 let muted = false;
