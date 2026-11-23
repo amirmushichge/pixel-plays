@@ -198,7 +198,10 @@ const BOWLER_YAW = 0;                // he runs straight down the pitch, whichev
    the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW).
    Nobody may stand between the camera and the batter, his bricks or the pitch (see hidesView), so the open
    corner straight down the screen (S) is guarded from the corner of the chalk, and the glance behind (SE) from
-   fine, off the line of the bricks. Any spot that would hide the view is nudged clear when the page loads */
+   fine, off the line of the bricks. Any spot that would hide the view is nudged clear when the page loads.
+   The spots stay put on the screen for either HAND, so their names do not: byHand(right, left) names a spot (and a
+   placing) for the batter in HAND. The off and leg placings swap names but keep their order in FIELDS */
+const byHand = (right, left) => HAND === 'right' ? right : left;
 const spot = (name, k, r) => {
   const a = (225 + 45 * k) * Math.PI / 180;
   return { name, x: +(BATTER.x + Math.cos(a) * r).toFixed(2), y: +(BATTER.y + Math.sin(a) * r).toFixed(2) };
@@ -206,10 +209,12 @@ const spot = (name, k, r) => {
 const CORNER = { name: 'deep corner', x: CHALK_X - .55, y: CHALK_Y - .6 };
 const FINE = { name: 'fine', x: 10.6, y: -3.9 };
 const FIELDS = {
-  ring: [spot('midwicket', 5.8, 5.4), spot('cover', .5, 5), spot('point', 1.5, 4.6), { ...CORNER }],  // in the gaps
-  off: [spot('mid-off', 0, 5.6), spot('cover', 1, 4.8), spot('point', 2, 4.6), spot('square', 5, 5.3)],
-  leg: [{ ...CORNER }, spot('square leg', 5, 5.3), spot('midwicket', 6, 5.4), spot('cover', 1, 5)],
-  deep: [spot('long-on', 6.8, 14.8), spot('deep midwicket', 6, 6), { ...FINE }, { ...CORNER }],
+  ring: [spot(byHand('midwicket', 'cover'), 5.8, 5.4), spot(byHand('cover', 'midwicket'), .5, 5), spot(byHand('point', 'square leg'), 1.5, 4.6), { ...CORNER }],  // in the gaps
+  // N, NE and E packed: the off side for a right-hander, the leg side for a left-hander
+  [byHand('off', 'leg')]: [spot(byHand('mid-off', 'mid-on'), 0, 5.6), spot(byHand('cover', 'midwicket'), 1, 4.8), spot(byHand('point', 'square leg'), 2, 4.6), spot(byHand('square leg', 'point'), 5, 5.3)],
+  // S, SW and W packed: the leg side for a right-hander, the off side for a left-hander
+  [byHand('leg', 'off')]: [{ ...CORNER }, spot(byHand('square leg', 'point'), 5, 5.3), spot(byHand('midwicket', 'cover'), 6, 5.4), spot(byHand('cover', 'midwicket'), 1, 5)],
+  deep: [spot(byHand('long-on', 'long-off'), 6.8, 14.8), spot(byHand('deep midwicket', 'deep cover'), 6, 6), { ...FINE }, { ...CORNER }],
 };
 const FIELDERS = FIELDS.ring;                      // the field the lane starts with
 const FIELD_NAMES = Object.keys(FIELDS);
@@ -569,7 +574,7 @@ const facing = (from, to) => Math.atan2(to.y - from.y, to.x - from.x);
 const G = {
   phase: 'pick', time: 0, status: '',
   you: null, rival: null,
-  // the batter stands side-on, front shoulder to the bowler: a right-hander's chest faces -y (his off side), back to the camera
+  // the batter is drawn by drawBatter from his own pose (this yaw is not used): side-on, front shoulder to the bowler
   batter: person(BATTER, 0, Math.PI / 2, POSE_BATTER),
   bowler: person(BOWLER, 1, BOWLER_YAW, POSE_BOWLER),
   fielders: FIELDERS.map((s, k) => ({ name: s.name, home: { x: s.x, y: s.y }, ...person(s, k + 2, facing(s, BATTER), POSE_FIELDER) })),
