@@ -35,6 +35,9 @@
   #picker h2 { margin: 0 0 4px; font: inherit; font-weight: 600; }
   #picker p { margin: 0 0 12px; color: var(--muted); }
   #picker #picker-new { color: var(--ink); }
+  /* mid-match only: the way back to the match without a key, like the rules popup's Close */
+  #picker-back { display: block; margin: 12px -10px -10px auto; color: var(--ink); touch-action: manipulation; }
+  #picker-back[hidden] { display: none; }
   #teams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
   #teams button { display: grid; justify-items: center; gap: 6px; margin: 0; padding: 10px 4px 8px; color: var(--ink); border: 1px solid transparent; min-height: 64px; touch-action: manipulation; }
   #teams button:hover { border-color: var(--ink); }
@@ -59,9 +62,10 @@
 </div>
 <dialog id="picker" aria-labelledby="picker-title" aria-describedby="picker-new picker-hint">
   <h2 id="picker-title">Pick your team</h2>
-  <p id="picker-new" hidden>Picking a team starts a new match. Press Escape to go back to this one.</p>
+  <p id="picker-new" hidden>Picking a team starts a new match.</p>
   <p id="picker-hint">You bat in their 1992 kit. The fielding side is drawn from the other eight.</p>
   <div id="teams" role="group" aria-label="Teams"></div>
+  <button id="picker-back" type="button" hidden>back to the match</button>
 </dialog>
 <script src="../shell.js"></script>
 <script>
@@ -2591,14 +2595,31 @@ teamGrid.addEventListener('keydown', e => {
 });
 // before the first pick there is nothing to go back to, so Escape cannot close the picker
 picker.addEventListener('cancel', e => { if (!picker.dataset.picked) e.preventDefault(); });
+// once a team has been picked there is something to go back to: Escape, a tap outside the box or the back button
+const pickerBack = document.getElementById('picker-back');
+pickerBack.addEventListener('click', () => picker.close());
+// (only a tap that also started outside: the tap after a result opens the picker on its way down, and its click must
+// not land on the new backdrop and close it again)
+const outsidePicker = e => {
+  const r = picker.getBoundingClientRect();
+  return e.target === picker && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom);
+};
+let downOutside = false;
+picker.addEventListener('pointerdown', e => { downOutside = outsidePicker(e); });
+picker.addEventListener('click', e => {
+  if (downOutside && outsidePicker(e) && picker.dataset.picked) picker.close();
+  downOutside = false;
+});
 picker.addEventListener('close', () => {
   // closed without a pick: carry on with the match, or after a result start the next one in the same shirts
   if (G.phase === 'pick') { if (G.match && G.match.result) newMatch(); else G.phase = 'idle'; }
   canvas.focus({ preventScroll: true });
 });
 function openPicker() {
-  // mid-match, picking a team throws the score away, so say so (Escape goes back to the match as it was)
-  document.getElementById('picker-new').hidden = !(G.match && !G.match.result && G.phase !== 'pick');
+  // mid-match, picking a team throws the score away, so say so, and offer the way back to the match as it was
+  const mid = !!(G.match && !G.match.result && G.phase !== 'pick');
+  document.getElementById('picker-new').hidden = !mid;
+  pickerBack.hidden = !mid;
   G.phase = 'pick';
   const k = Math.max(0, picker.dataset.picked ? TEAMS.indexOf(G.you) : 0);
   teamButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(!!picker.dataset.picked && i === k)));
