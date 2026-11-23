@@ -155,13 +155,32 @@ const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
 
 const BATTER = { x: 7.55, y: -.55 }; // on the leg side of the stumps line, so the ball passes in front of his pads
 const BOWLER = { x: -6.4, y: -.55 };
-// fielders sit between the eight screen directions from the batter, so every shot direction is open floor
+// the lane's first field: fielders between the eight screen directions from the batter
 const FIELDERS = [
   { name: 'mid-off', x: -1.6, y: 3.9 },
   { name: 'cover', x: 4.6, y: 4.4 },
   { name: 'mid-on', x: -.7, y: -4.1 },
   { name: 'square leg', x: 9.4, y: -4.9 },
 ];
+/* field placings, one per over in a shuffled order, so the gaps move. Spots are given as [direction, distance]
+   from the bat: the direction is an index into DIRS (fractions sit between two shot directions). The bowler is
+   the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW). */
+const spot = (name, k, r) => {
+  const a = (225 + 45 * k) * Math.PI / 180;
+  return { name, x: +(CONTACT_X + Math.cos(a) * r).toFixed(2), y: +(PITCH_Y + Math.sin(a) * r).toFixed(2) };
+};
+const FIELDS = {
+  ring: FIELDERS,                                                     // four between the gaps, none on a line
+  off: [spot('point', 4, 4.6), spot('cover', 5, 4.4), spot('mid-off', 6, 5.6), spot('midwicket', 0, 5.2)],
+  leg: [spot('square leg', 2, 4.4), spot('midwicket', 1, 4.6), spot('mid-on', 0, 6.5), spot('cover', 5, 4.5)],
+  deep: [spot('long-on', 7.5, 8), spot('long-off', 6.5, 7.5), spot('point', 4, 4.2), spot('fine leg', 2.5, 4)],
+};
+const FIELD_NAMES = Object.keys(FIELDS);
+/* fielding: after REACT seconds the chosen fielder runs at RUN_SPEED to where he can first reach the ball; he
+   gathers a ball within GATHER_R of him and below GATHER_Z (chest height). Runs go by how far from the bat he
+   gathered it: nearer than RUN_DIST[0] is no run, then 1, 2, and 3 beyond RUN_DIST[2] */
+const REACT = .22, RUN_SPEED = 5.4, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
+const RUN_DIST = [4, 6, 8.5];
 /* what a loose ball can hit besides the walls: upright drums (x, y, r, h) and boxes (x0, y0, x1, y1, h), matching
    the baked props. A ball above a prop's top lands on it. Plant leaves, the washing and the meter box don't count.
    Everything standing on the footpath counts as the wall it stands against (house rule: the scooter is the wall),
@@ -487,6 +506,7 @@ function bake() {
 const POSE_BATTER = { crouch: .3, lean: .16, stance: .02, armR: .2, armL: .55 };
 const POSE_BOWLER = { stance: .12, armR: .2, armL: .1 };
 const POSE_FIELDER = { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 };
+const POSE_HOLD = { stance: .14, lean: .05, armR: -1.2, armL: .2 };   // ball in hand, held up to show it
 // a figure palette for one team: a solid shirt, and trousers a shade darker so the figure keeps its waist
 const kitPalette = team => ({ shirt: team.body, stripe: team.body, legs: team.legs });
 const person = (spot, k, yaw, pose) => ({ x: spot.x, y: spot.y, yaw, pose, palette: { skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
@@ -497,7 +517,8 @@ const G = {
   // the batter stands side-on: chest towards +y (the camera side, the off side), front shoulder to the bowler
   batter: person(BATTER, 0, Math.PI / 2, POSE_BATTER),
   bowler: person(BOWLER, 1, facing(BOWLER, BATTER), POSE_BOWLER),
-  fielders: FIELDERS.map((s, k) => ({ name: s.name, ...person(s, k + 2, facing(s, BATTER), POSE_FIELDER) })),
+  fielders: FIELDERS.map((s, k) => ({ name: s.name, home: { x: s.x, y: s.y }, ...person(s, k + 2, facing(s, BATTER), POSE_FIELDER) })),
+  field: 'ring', fieldOrder: FIELD_NAMES, forceField: null,
   // bowling: del is the current delivery (see bowl()), ball is what is drawn, last is the latest ball's result
   del: { stage: 'wait', timer: 0 }, ball: null, last: null, history: [],
   balls: 0, over: 0, ballInOver: 0, overType: 'fast',
@@ -608,7 +629,8 @@ function bowl(opts = {}) {
   G.del = d;
   G.ball = null;
   G.stumps.down = false;
-  G.bowler.x = d.mark;
+  G.bowler.x = d.mark; G.bowler.y = BOWLER.y;
+  setField(fieldFor(G.over), true);
   return d;
 }
 function ballAt(d, t) {
@@ -658,6 +680,8 @@ function strike(d) {
   d.shot = { speed, lift, scatter };
   d.stage = 'live';
   d.tHit = d.hitAt;
+  d.tReact = REACT;
+  d.chase = planChase(G.ball, REACT);
 }
 // where the loose ball is resting or bouncing: the paving, or the top of a prop it is above
 function floorUnder(b) {
@@ -741,14 +765,71 @@ function stepBall(b, dt) {
   }
   b.still = !b.gone && b.vz === 0 && b.vx === 0 && b.vy === 0;
 }
-// step the live ball up to the delivery's clock and see whether the ball is over
+/* ---------- fielding ----------
+   At the hit the ball's whole path is replayed ahead of time (same fixed steps, so it is exact) to find the first
+   moment any fielder can be at it: that fielder chases to that spot, the others stay set and watch. A boundary
+   reached first beats them all. If the chase somehow falls through, it is planned again from where things are. */
+const team = () => [G.bowler, ...G.fielders];
+const canGather = b => b.touched && b.z <= GATHER_Z;
+function planChase(ball, react) {
+  const sim = { ...ball }, players = team();
+  while (sim.t < LIVE_MAX) {
+    stepBall(sim, PHYS_DT);
+    if (sim.event || sim.gone) break;
+    if (canGather(sim)) {
+      const reach = Math.max(0, sim.t - ball.t - react) * RUN_SPEED + GATHER_R;
+      for (const f of players) if (Math.hypot(f.x - sim.x, f.y - sim.y) <= reach) return { f, t: sim.t, x: sim.x, y: sim.y };
+    }
+    if (sim.still) break;
+  }
+  // nobody gets there in time: the nearest runs to where the ball ends up (it may be a boundary)
+  const f = players.reduce((a, c) => Math.hypot(c.x - sim.x, c.y - sim.y) < Math.hypot(a.x - sim.x, a.y - sim.y) ? c : a);
+  return { f, t: Infinity, x: sim.x, y: sim.y };
+}
+const RUN_POSE = { lean: .3 };
+function stepFielders(d, dt) {
+  const b = G.ball, c = d.chase;
+  for (const f of team()) {
+    if (f === c.f && b.t - d.tReact >= 0) {
+      const dx = c.x - f.x, dy = c.y - f.y, gap = Math.hypot(dx, dy), go = Math.min(gap, RUN_SPEED * dt);
+      if (gap > 1e-6) { f.x += dx / gap * go; f.y += dy / gap * go; f.yaw = Math.atan2(dy, dx); }
+      f.running = gap > .02;
+    } else if (f !== G.bowler || b.t > .3) f.yaw = facing(f, b);
+  }
+}
+// the fielder who can reach the ball now, if any
+function gatherer(b) {
+  if (!canGather(b)) return null;
+  for (const f of team()) if (Math.hypot(f.x - b.x, f.y - b.y) <= GATHER_R) return f;
+  return null;
+}
+const runsFor = dist => RUN_DIST.findIndex(r => dist < r) < 0 ? 3 : RUN_DIST.findIndex(r => dist < r);
+// step the live ball and the chase up to the delivery's clock, and settle the ball as soon as something ends it
 function stepLive(d) {
   const b = G.ball, due = G.time - d.tHit;
   while (b.t + PHYS_DT <= due + 1e-9) {
     stepBall(b, PHYS_DT);
-    if (b.event || b.still || b.gone) return finish(d, 'hit');
+    stepFielders(d, PHYS_DT);
+    const e = b.event;
+    if (e) {
+      if (e.how === 'over') return finish(d, 'hit', { runs: 6, out: false, how: 'over the wall' }); // out comes later
+      return finish(d, 'hit', { runs: e.touched ? 4 : 6, out: false, how: e.how });
+    }
+    const f = gatherer(b);
+    if (f) {
+      b.held = f; b.vx = b.vy = b.vz = 0;
+      const dist = Math.hypot(b.x - b.from.x, b.y - b.from.y);
+      return finish(d, 'hit', { runs: runsFor(dist), out: false, how: 'fielded', by: f.name || 'bowler', dist });
+    }
+    if (b.gone) return finish(d, 'hit', { runs: 0, out: false, how: 'lost' });
+    // the planned gather did not happen: plan again from here, with no reaction delay
+    if (b.t > d.chase.t + .25 || d.chase.t === Infinity && b.still) { d.chase = planChase(b, 0); d.tReact = b.t; }
   }
-  if (due >= LIVE_MAX) { G.timeouts++; finish(d, 'hit'); }
+  if (due >= LIVE_MAX) {
+    G.timeouts++;
+    const dist = Math.hypot(b.x - b.from.x, b.y - b.from.y);
+    finish(d, 'hit', { runs: runsFor(dist), out: false, how: 'fielded', by: null, dist, timeout: true });
+  }
 }
 // the ball reached the bricks without being hit: it either knocks them over or carries on into the drum
 function passStumps(d) {
@@ -765,7 +846,10 @@ function passStumps(d) {
   G.ball = { x: b.x, y: b.y, z: b.z, vx: dx / n * v, vy: dy / n * v, vz: Math.max(b.vz, .8) };
   finish(d, 'backstop');
 }
-function finish(d, result) {
+/* settle the ball. outcome = { runs, out, how } where how is 'wall' or 'chalk' (4 or 6), 'fielded' (0 to 3, with
+   by and dist), 'bowled', or 'beaten' (missed or left, into the drum) */
+const OUTCOME_TEXT = o => o.how === 'bowled' ? 'bowled' : o.runs === 4 ? 'four' : o.runs === 6 ? 'six' : o.runs ? o.runs + (o.runs > 1 ? ' runs' : ' run') : 'no run';
+function finish(d, result, outcome) {
   d.stage = 'done';
   d.timer = DONE_T;
   const sw = d.swing;
@@ -775,11 +859,11 @@ function finish(d, result) {
     dt: sw ? sw.dt : null, against: sw ? sw.against : false, result,
   };
   const b = G.ball;
-  if (result === 'hit') Object.assign(G.last, { shot: d.shot, event: b.event && b.event.how, touched: b.event ? b.event.touched : b.touched, bounces: b.bounces, at: { x: b.x, y: b.y, z: b.z }, t: b.t });
+  if (result === 'hit') Object.assign(G.last, { shot: d.shot, touched: b.event ? b.event.touched : b.touched, bounces: b.bounces, at: { x: b.x, y: b.y, z: b.z }, t: b.t });
+  const o = outcome || (result === 'bowled' ? { runs: 0, out: true, how: 'bowled' } : { runs: 0, out: false, how: 'beaten' });
+  Object.assign(G.last, o, { field: G.field });
   G.history.push(G.last);
-  if (result === 'hit') setStatus(GRADES[sw.grade] + (sw.side ? ' (' + sw.side + ')' : '') + ' · ' + DIRS[sw.dir]);
-  else if (result === 'bowled') setStatus(sw ? 'missed it · bowled' : 'bowled');
-  else setStatus(sw ? 'swing and a miss' : 'beaten · into the drum');
+  setStatus(OUTCOME_TEXT(o));
 }
 // a loose ball: gravity, bounces off the paving, and the drum stops it dead
 function stepLoose(b, dt) {
@@ -816,6 +900,37 @@ function resetDelivery() {
   G.stumps.down = false;
   G.balls = 0; G.over = 0; G.ballInOver = 0;
   G.overType = rng() < .5 ? 'fast' : 'spin';
+  // a new order of field placings, never the same one two overs running
+  const order = FIELD_NAMES.slice();
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  G.fieldOrder = order;
+  setField(fieldFor(0), true);
+}
+// the placing for an over, and the one the next ball will be bowled to
+const fieldFor = over => G.forceField || G.fieldOrder[over % G.fieldOrder.length];
+const nextField = () => fieldFor(G.ballInOver >= 6 ? G.over + 1 : G.over);
+// send the fielders to a placing (snap puts them straight there)
+function setField(name, snap) {
+  G.field = name;
+  FIELDS[name].forEach((s, k) => {
+    const f = G.fielders[k];
+    f.name = s.name; f.home = { x: s.x, y: s.y };
+    if (snap) { f.x = s.x; f.y = s.y; f.yaw = facing(f, BATTER); f.pose = POSE_FIELDER; f.running = false; }
+  });
+}
+const fieldSet = () => G.fielders.every(f => Math.hypot(f.x - f.home.x, f.y - f.home.y) < .05);
+// between balls the fielders jog back to their spots (a new over may bring new ones) and settle facing the bat
+function walkFielders(dt) {
+  for (const f of G.fielders) {
+    const dx = f.home.x - f.x, dy = f.home.y - f.y, gap = Math.hypot(dx, dy);
+    if (gap > .05) {
+      const go = Math.min(gap, JOG * dt);
+      f.x += dx / gap * go; f.y += dy / gap * go; f.yaw = Math.atan2(dy, dx);
+      f.pose = walkPose(9, .2);
+    } else {
+      f.x = f.home.x; f.y = f.home.y; f.yaw = facing(f, BATTER); f.pose = POSE_FIELDER;
+    }
+  }
 }
 
 /* ---------- update ---------- */
@@ -835,29 +950,38 @@ function update(dt) {
     stepLive(d);
   } else if (d.stage === 'done') {
     const b = G.ball;
-    if (b && b.t != null) { const due = G.time - d.tHit; while (b.t + PHYS_DT <= due + 1e-9) stepBall(b, PHYS_DT); }
+    if (b && b.held) b.t = G.time - d.tHit;
+    else if (b && b.t != null) { const due = G.time - d.tHit; while (b.t + PHYS_DT <= due + 1e-9) stepBall(b, PHYS_DT); }
     else if (b) stepLoose(b, dt);
     if (b && b.gone) G.ball = null;
-    if ((d.timer -= dt) <= 0) { d.stage = 'wait'; d.timer = .5; G.ball = null; }
+    if ((d.timer -= dt) <= 0) { d.stage = 'wait'; d.timer = .5; G.ball = null; setField(nextField()); }
   } else if (d.stage === 'wait') {
     d.timer -= dt;
   }
+  // the fielders: set while the ball comes down, chasing while it is live, then back to their spots
+  if (d.stage === 'live' || d.stage === 'done' && d.timer > DONE_T - .7) {
+    for (const f of team()) {
+      if (f === G.bowler && G.time - d.t0 < d.runT + .4) continue;
+      f.pose = f.running && d.stage === 'live' ? { ...walkPose(14, .34), ...RUN_POSE } : f === G.bowler ? POSE_BOWLER : G.ball && G.ball.held === f ? POSE_HOLD : POSE_FIELDER;
+    }
+  } else if (d.stage === 'done' || d.stage === 'wait') walkFielders(dt);
   // the bowler: running in and following through, then walking back to his mark
   const bw = G.bowler, s = d.t0 == null ? Infinity : G.time - d.t0;
   if (d.stage !== 'wait' && s < d.runT + .4) {
     const at = bowlerAt(d, s);
     bw.x = at.x; bw.yaw = at.yaw; bw.pose = at.pose;
-  } else if (d.stage === 'done' || d.stage === 'wait') {
-    const mark = BOWLERS[nextType()].mark, gap = mark - bw.x;
-    if (Math.abs(gap) > .05) {
-      bw.x += Math.sign(gap) * Math.min(Math.abs(gap), 3.6 * dt);
-      bw.yaw = facing(BOWLER, BATTER) + (gap < 0 ? Math.PI : 0);
+  } else if (d.stage === 'done' && d.timer <= DONE_T - .7 || d.stage === 'wait') {
+    const mark = { x: BOWLERS[nextType()].mark, y: BOWLER.y }, gx = mark.x - bw.x, gy = mark.y - bw.y, gap = Math.hypot(gx, gy);
+    if (gap > .05) {
+      const go = Math.min(gap, 3.6 * dt);
+      bw.x += gx / gap * go; bw.y += gy / gap * go;
+      bw.yaw = Math.atan2(gy, gx);
       bw.pose = walkPose(7, .14);
     } else {
-      bw.x = mark;
+      bw.x = mark.x; bw.y = mark.y;
       bw.yaw = facing(BOWLER, BATTER);
       bw.pose = POSE_BOWLER;
-      if (d.stage === 'wait' && d.timer <= 0 && G.auto) bowl();
+      if (d.stage === 'wait' && d.timer <= 0 && G.auto && fieldSet()) bowl();
     }
   }
   if (G.batter.swing && G.time - G.batter.swing.t0 > .9) G.batter.swing = null;
@@ -995,8 +1119,12 @@ function draw() {
   zb.set(bakedZ);
   pendingShadows.length = 0;
   const d = G.del;
-  const hand = drawFigure(G.bowler, G.bowler.pose);
-  for (const f of G.fielders) drawFigure(f, f.pose);
+  const hand = drawFigure(G.bowler, G.bowler.pose), held = G.ball && G.ball.held;
+  if (held === G.bowler) Object.assign(G.ball, { x: hand[0], y: hand[1], z: hand[2] });
+  for (const f of G.fielders) {
+    const h = drawFigure(f, f.pose);
+    if (held === f) Object.assign(G.ball, { x: h[0], y: h[1], z: h[2] });
+  }
   drawStumps();
   drawBatter();
   if (d.stage === 'runup') drawBall({ x: hand[0], y: hand[1], z: hand[2] });
@@ -1135,16 +1263,26 @@ const LANE = {
   WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
+const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
 const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, AGAINST_LINE, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
 const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
 // test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
 window.__cricket = {
-  G, LANE, BOWLING, TEAMS, setTeams, chooseTeam, openPicker,
+  G, LANE, BOWLING, FIELDING, TEAMS, setTeams, chooseTeam, openPicker,
   step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); },
   freeze(on = true) { G.frozen = on; },
   seed(n) { rng = mulberry32(n); },
   auto(on = true) { G.auto = on; },
   force(opts) { G.force = opts || {}; return G.force; },
+  // fix the field placing (a FIELDS name) for every following ball until cleared with null; fielders snap to it now
+  field(name) {
+    if (name != null && !FIELDS[name]) throw new Error('no field ' + name);
+    G.forceField = name || null;
+    setField(name || fieldFor(G.over), true);
+    return G.fielders.map(f => ({ name: f.name, x: f.x, y: f.y }));
+  },
+  // the latest ball's outcome: { runs, out, how, by? } (null before the first ball ends)
+  outcome() { return G.last && { runs: G.last.runs, out: G.last.out, how: G.last.how, by: G.last.by }; },
   bowl,
   swing(dir) { return swingAt(dirIndex(dir)); },
   ballAt(t) { return ballAt(G.del, t); },
