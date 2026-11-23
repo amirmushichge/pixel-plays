@@ -123,6 +123,8 @@ const CHORD_T = .06;                               // two arrow keys pressed thi
 const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
 const HOLD_T = .9;                                 // of that, how long everyone holds still (or celebrates) first
 const ROSE_IN = 15, ROSE_OUT = 23, FLASH_T = .45;  // the direction guide around the batter, in canvas pixels
+// the swing cue (see drawCue): shown for the last CUE_T s, solid for CUE_NOW s either side of the moment; tick gap, length
+const CUE_T = .6, CUE_NOW = .05, CUE_GAP = [.12, 1.5], CUE_TICK = .45;
 
 /* ---------- the hit ----------
    Off the bat the ball is a loose body: gravity, bounces on the paving, rolls to a stop, and rebounds off the house
@@ -1163,6 +1165,33 @@ function drawMarker(d) {
   }
   drawSignal(fill);
 }
+// a ground segment from (x0, y0) to (x1, y1) as whole screen pixels, `thick` pixels deep
+function segPixels(x0, y0, x1, y1, thick, out = []) {
+  const a = project(x0, y0, 0), b = project(x1, y1, 0), n = Math.ceil(Math.hypot(b.sx - a.sx, b.sy - a.sy) * 2) + 1;
+  for (let k = 0; k <= n; k++) {
+    const x = Math.round(lerp(a.sx, b.sx, k / n)), y = Math.round(lerp(a.sy, b.sy, k / n));
+    for (let j = 0; j < thick; j++) out.push([x, y + j]);
+  }
+  return out;
+}
+/* the swing cue: a hitting line on the ground across the ball's path where bat meets ball. Two ticks start wide
+   apart either side of the ball's line and slide in as the ball comes; when they meet they become one solid bar:
+   swing now. It shows for the last CUE_T seconds (the same for both bowlers, so it is one rhythm to learn) and goes
+   as soon as you swing */
+function drawCue(d) {
+  const lead = d.tContact - G.time;
+  if (d.swing || lead > CUE_T || lead < -CUE_NOW) return;
+  const y = ballAt(d, d.tContact).y, x = CONTACT_X;
+  let fill;
+  if (Math.abs(lead) <= CUE_NOW) fill = segPixels(x, y - CUE_GAP[0] - CUE_TICK, x, y + CUE_GAP[0] + CUE_TICK, 2);
+  else {
+    const g = lerp(CUE_GAP[0], CUE_GAP[1], clamp(lead / CUE_T, 0, 1));
+    fill = segPixels(x, y + g, x, y + g + CUE_TICK, 2, segPixels(x, y - g - CUE_TICK, x, y - g, 2));
+  }
+  // keep the ball itself in view: the cue never paints over it
+  const b = G.ball, c = b && project(b.x, b.y, b.z), r = c && Math.abs(project(b.x, b.y, b.z + BALL_R).sy - c.sy) + 2;
+  drawSignal(c ? fill.filter(([px, py]) => Math.hypot(px - c.sx, py - c.sy) > r) : fill);
+}
 // the 8 screen directions as faint spokes around the batter; the one you swing at lights up
 const roseCenter = () => project(BATTER.x, BATTER.y, 1.05);
 const dirFromScreen = (dx, dy) => (Math.round(Math.atan2(dx, -dy) / (Math.PI / 4)) + 8) % 8;
@@ -1212,6 +1241,7 @@ function draw() {
   if (G.phase !== 'pick') {
     drawRose();
     if ((d.stage === 'runup' || d.stage === 'flight') && !d.bounced) drawMarker(d);
+    if (d.stage === 'flight') drawCue(d);
   }
   ctx.putImageData(image, 0, 0);
 }
