@@ -1627,6 +1627,28 @@ function poseBatter(t, lean) {
 }
 // the lean towards or away from the bat is eased over a few frames, so the body never jumps when the bat whips
 const LEAN_T = .05;
+/* the blade is a flat board, so it is lit as one: the engine shades each ball of a capsule by its own curve, and a
+   blade leaning back (the stance, tapping the crease) shows only the unlit lower-right sides of its balls, so it
+   went dull brown. Here its pixels are captured, then painted pale willow, with a lit upper-left rim and a
+   darker lower-right edge, whichever way it leans. segs: [a, b, r] in world units */
+function drawBlade(segs) {
+  const ramp = rampOf(BLADE), front = new Map();
+  capture = [];
+  for (const [a, b, r] of segs) capsule(a, b, r, r, () => BLADE, 'solid');
+  const got = capture;
+  capture = null;
+  for (let j = 0; j < got.length; j += 4) {
+    const i = got[j + 1] * W + got[j], d = got[j + 2];
+    if (!(front.get(i) >= d)) front.set(i, d);
+  }
+  for (const [i, d] of front) {
+    if (d <= zb[i]) continue;
+    const lit = !front.has(i - W) || !front.has(i - 1), shade = !front.has(i + W) || !front.has(i + 1);
+    zb[i] = d;
+    pix[i] = ramp[lit === shade ? 3 : lit ? 4 : 2];
+  }
+  for (const [a, b, r] of segs) pendingShadows.push(a, r, b, r);
+}
 function drawBatter() {
   const p = G.batter, target = poseBatter(G.time).moved, f0 = p.fit, dt = f0 ? G.time - f0.t : 1;
   const lean = dt > 0 && dt < .1 ? vMix(f0.lean, target, 1 - Math.exp(-dt / LEAN_T)) : target;
@@ -1639,15 +1661,18 @@ function drawBatter() {
   const D = bat.D, N = vNorm(vSub(bat.N, vMul(D, vDot(bat.N, D)))), Wd = vNorm(vCross(D, N));
   const pt = (s, w) => { const q = vAdd(vAdd(bat.G, vMul(D, s * k)), vMul(Wd, w * k)); return [q[0], q[1], Math.max(.04, q[2])]; };
   add(pt(.02, 0), pt(BAT.handle, 0), .055 * k, .06 * k, () => BAT_TAPE);
-  for (const w of [-BAT.half, BAT.half]) add(pt(BAT.blade + .06, w), pt(BAT.len - .05, w), BAT.r * k, BAT.r * k, () => BLADE);
+  const flip = q => HAND === 'right' ? q : [q[0], myY(q[1]), q[2]];
+  drawBlade([-BAT.half, BAT.half].map(w => [flip(pt(BAT.blade + .06, w)), flip(pt(BAT.len - .05, w)), BAT.r * k]));
   // a whip: when the blade moves further than it can be followed in one frame (a press right on the ball), smear it
   // with in-between blades along its path, solid like the bat itself
   if (G.batter.swing) {
     const was = poseBatter(G.time - 1 / 60).bat, toe = b => vAdd(b.G, vMul(b.D, BAT.len * k)), gap = vLen(vSub(toe(bat), toe(was)));
+    const smear = [];
     for (let i = 1, n = Math.min(3, Math.floor(gap / .55)); i <= n; i++) {
       const m = mixBat(was, bat, i / (n + 1)), q = s => vAdd(m.G, vMul(m.D, s * k));
-      add(q(BAT.blade + .1), q(BAT.len - .1), BAT.r * .8 * k, BAT.r * .8 * k, () => BLADE);
+      smear.push([flip(q(BAT.blade + .1)), flip(q(BAT.len - .1)), BAT.r * .8 * k]);
     }
+    if (smear.length) drawBlade(smear);
   }
 }
 // the batter's stumps are a stack of bricks, staggered like a gully wicket. Bowled, they topple back off the stack:
