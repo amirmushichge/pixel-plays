@@ -2525,10 +2525,11 @@ function knock(at, length, level, freq, q = 4, type = 'bandpass') {
 }
 const jit = (a, b) => a + Math.random() * (b - a);  // sound only: never the game's seeded rng
 // the bat-on-ball sound is candidate 7, "Crisp but full", from the bat-sound audition, ported as is. These two helpers
-// are the audition's mode() and burst() (burst is taken by the dust, so renamed); `out` is the node they play into.
+// are the audition's mode() and burst(), renamed so they clash with no game function (strike() is the hit itself,
+// ring and burst are taken too); `out` is the node they play into.
 // a damped resonance: a sine held at one pitch, faded in over `attack` seconds and dying away over `decay` seconds.
 // `bend` > 1 starts it that much flatter and lets it settle up to pitch in 20 ms (a rubbery "pop"; 1 = none)
-function ring(out, at, freq, decay, level, attack = .003, bend = 1) {
+function sfxRing(out, at, freq, decay, level, attack = .003, bend = 1) {
   const o = audio.createOscillator(), g = audio.createGain();
   o.type = 'sine';
   o.frequency.setValueAtTime(freq / bend, at);
@@ -2541,7 +2542,7 @@ function ring(out, at, freq, decay, level, attack = .003, bend = 1) {
 }
 // a burst of noise through a band-pass (a struck, rough body), with a gentle low-pass on top to keep it round.
 // lp = 0 skips the low-pass
-function strike(out, at, freq, q, decay, level, attack = .002, lp = 2500) {
+function sfxStrike(out, at, freq, q, decay, level, attack = .002, lp = 2500) {
   const s = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
   s.buffer = noiseBuf;
   f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
@@ -2567,10 +2568,10 @@ function sfx(kind, amount = 1) {
     const p = jit(.97, 1.03) * [1, 1.04, 1.14][g], v = jit(.94, 1.06) * [1, .85, .6][g], len = 1.6 * [1, .85, .6][g];
     const out = audio.createGain();
     out.gain.value = HIT_LEVEL; out.connect(audio.destination);
-    strike(out, now, 2600 * p, .8, .006, .65 * v * [1, 1, 1.3][g], .0007, 0);
-    ring(out, now, 470 * p, .07 * len, .3 * v, .0015);
-    ring(out, now, 200 * p, .1 * len, .4 * v * [1, .8, .5][g], .002);
-    strike(out, now, 470 * p, 4, .06 * len, 1.2 * v, .0015, 3000);
+    sfxStrike(out, now, 2600 * p, .8, .006, .65 * v * [1, 1, 1.3][g], .0007, 0);
+    sfxRing(out, now, 470 * p, .07 * len, .3 * v, .0015);
+    sfxRing(out, now, 200 * p, .1 * len, .4 * v * [1, .8, .5][g], .002);
+    sfxStrike(out, now, 470 * p, 4, .06 * len, 1.2 * v, .0015, 3000);
   } else if (kind === 'bounce') {
     glide(now, 200, 90, .07, .04 + .16 * Math.min(1, amount), 'sine');
     hiss(now, .02, .03 * Math.min(1, amount), 1800);
