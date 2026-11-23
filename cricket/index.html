@@ -79,8 +79,8 @@ const EDGE_X = 13.4, EDGE_Y = 7.5;                             // the near sides
 const CHALK_X = 11.6, CHALK_Y = 5.9;                           // chalk boundary along the two open near sides
 const PATH_W = 1.1;                                            // concrete footpath along the house fronts
 const PITCH_Y = -.3;
-const CREASE_X = 7.1, STUMPS_X = 8.5, BOWL_LINE_X = -3.9, BRICK_X = -4.5;
-const BACKSTOP = { x: 10.5, y: -.7, r: .44, h: 1.05 };
+const CREASE_X = 7.1, STUMPS_X = 9.5, BOWL_LINE_X = -3.9, BRICK_X = -4.5;
+const BACKSTOP = { x: 10.85, y: -.7, r: .44, h: 1.05 };
 const BRICK = { w: .22, l: .5, h: .17 };                        // one brick: w along x, l along y
 const STUMP_BRICKS = 4, STUMPS_Z = STUMP_BRICKS * BRICK.h;      // the stack's height
 const FIG_SCALE = 1;
@@ -95,7 +95,10 @@ const HAND = 'right';                              // 'left' mirrors the stance,
 const LEG = HAND === 'right' ? 1 : -1;
 const BALL_R = .2, BALL_COLOR = [216, 236, 72], GRAVITY = 12;  // a tennis ball, drawn a little large so it reads
 const RELEASE_X = -4.4;                            // the bowler's front foot lands just behind the chalk line
-const CONTACT_X = 6.9;                             // the bat meets the ball a stride in front of the batter
+const CONTACT_X = 6.5;                             // the ideal moment: the bat meets the ball a long stride in front of the batter
+const AIM_X = 8.5;                                 // bowlers aim along the line to here (and pitch the bounce height for it)
+/* the bricks stand well back, so a late press still finds the ball in front of them: the ball takes about 0.21 s
+   (fast) / 0.35 s (spin) from CONTACT_X to the bricks. A late hit is played from wherever the ball has got to */
 const STUMPS_FACE = STUMPS_X - BRICK.w / 2 - .05;  // the front of the brick stack, allowing for the stagger
 const BOWLED_HALF = .3;                            // a missed ball whose centre passes this close to PITCH_Y hits the bricks
 const ARM_RELEASE = -3.4;                          // bowling arm just past vertical, swinging over the top
@@ -173,9 +176,10 @@ const FIELDERS = [
 /* field placings, one per over in a shuffled order, so the gaps move. Spots are given as [direction, distance]
    from the bat: the direction is an index into DIRS (fractions sit between two shot directions). The bowler is
    the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW). */
+const FIELD_X = 6.9;                               // where the placings are measured from
 const spot = (name, k, r) => {
   const a = (225 + 45 * k) * Math.PI / 180;
-  return { name, x: +(CONTACT_X + Math.cos(a) * r).toFixed(2), y: +(PITCH_Y + Math.sin(a) * r).toFixed(2) };
+  return { name, x: +(FIELD_X + Math.cos(a) * r).toFixed(2), y: +(PITCH_Y + Math.sin(a) * r).toFixed(2) };
 };
 const FIELDS = {
   ring: FIELDERS,                                                     // four between the gaps, none on a line
@@ -631,15 +635,15 @@ function bowl(opts = {}) {
   const hand = figure(rel.x, BOWLER.y, rel.yaw, { scale: FIG_SCALE, ...rel.pose }, G.bowler.palette, () => {});
   d.R = { x: hand[0], y: hand[1], z: hand[2] };
   // it pitches on the straight line from the hand to its aim at the stumps
-  d.P = { x: px, y: lerp(d.R.y, aim, (px - d.R.x) / (STUMPS_X - d.R.x)) };
+  d.P = { x: px, y: lerp(d.R.y, aim, (px - d.R.x) / (AIM_X - d.R.x)) };
   d.t1 = Math.hypot(d.P.x - d.R.x, d.P.y - d.R.y) / B.speed;
   d.vz1 = (BALL_R - d.R.z + GRAVITY * d.t1 * d.t1 / 2) / d.t1;
   // off the pitch it heads for its moved line at the stumps
   d.end = aim + (move === 'in' ? LEG * amount : move === 'away' ? -LEG * amount : 0);
-  const ex = STUMPS_X - d.P.x, ey = d.end - d.P.y, el = Math.hypot(ex, ey);
+  const ex = AIM_X - d.P.x, ey = d.end - d.P.y, el = Math.hypot(ex, ey);
   d.u = { x: ex / el, y: ey / el };
   d.v2 = B.speed * B.after;
-  const after = x => (x - d.P.x) / (d.v2 * d.u.x), tS = after(STUMPS_X);
+  const after = x => (x - d.P.x) / (d.v2 * d.u.x), tS = after(AIM_X);
   d.vz2 = (B.bounce - BALL_R + GRAVITY * tS * tS / 2) / tS;
   d.tRelease = d.t0 + d.runT;
   d.tPitch = d.tRelease + d.t1;
@@ -658,8 +662,12 @@ function ballAt(d, t) {
     const k = s / d.t1;
     return { x: lerp(d.R.x, d.P.x, k), y: lerp(d.R.y, d.P.y, k), z: d.R.z + d.vz1 * s - GRAVITY * s * s / 2 };
   }
-  const q = s - d.t1, v = d.v2 * q;
-  return { x: d.P.x + d.u.x * v, y: d.P.y + d.u.y * v, z: BALL_R + d.vz2 * q - GRAVITY * q * q / 2, vx: d.u.x * d.v2, vy: d.u.y * d.v2, vz: d.vz2 - GRAVITY * q };
+  const q = s - d.t1, v = d.v2 * q, q2 = 2 * d.vz2 / GRAVITY;
+  const at = { x: d.P.x + d.u.x * v, y: d.P.y + d.u.y * v, vx: d.u.x * d.v2, vy: d.u.y * d.v2 };
+  // a slow ball can come down again before it reaches the bricks: it bounces a second time, lower
+  if (q <= q2) return { ...at, z: BALL_R + d.vz2 * q - GRAVITY * q * q / 2, vz: d.vz2 - GRAVITY * q };
+  const r = q - q2, vz3 = d.vz2 * BOUNCE;
+  return { ...at, z: BALL_R + vz3 * r - GRAVITY * r * r / 2, vz: vz3 - GRAVITY * r };
 }
 function gradeOf(dt, win) {
   const a = Math.abs(dt);
@@ -862,7 +870,7 @@ function stepLive(d) {
 function passStumps(d) {
   const b = ballAt(d, d.tStumps);
   // judged on its line at the bricks, after any movement
-  if (Math.abs(d.end - PITCH_Y) <= BOWLED_HALF) {
+  if (Math.abs(b.y - PITCH_Y) <= BOWLED_HALF) {
     G.stumps = { down: true, t: d.tStumps, seed: d.n };
     G.ball = { x: b.x, y: b.y, z: b.z, vx: -1.4, vy: (b.y - PITCH_Y) * 3, vz: 1.2 };
     return finish(d, 'bowled');
