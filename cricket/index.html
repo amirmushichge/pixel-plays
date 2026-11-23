@@ -1562,7 +1562,7 @@ function poseBatter(t, lean) {
   [body.handL, body.handR] = hands();
   const f = bodyFrame(body);
   body.poleL = vAdd(vMul(f.fwd, .3), [-.6, 0, -.5]);
-  body.poleR = vAdd(vMul(f.fwd, -.2), [.5, .3, -.6]);
+  body.poleR = vAdd(vMul(f.fwd, .45), [.1, 0, -.7]);  // the bottom elbow tucks in under the hands, never out past his back
   return { body, bat, moved };
 }
 // the lean towards or away from the bat is eased over a few frames, so the body never jumps when the bat whips
@@ -1574,11 +1574,11 @@ function drawBatter() {
   const { body, bat } = poseBatter(G.time, vLen(lean) > 1e-9 ? lean : [0, 0, 1e-12]), k = FIG_SCALE;
   const add = HAND === 'right' ? dynamicAdd : (a, b, r0, r1, c) => dynamicAdd([a[0], myY(a[1]), a[2]], [b[0], myY(b[1]), b[2]], r0, r1, c);
   drawBody(body, p.palette, add);
-  // the bat: a short taped handle that ends inside the bottom hand's reach, then a wide flat blade: two capsules
+  // the bat: a short taped handle that ends inside the hands, then a wide flat blade: two capsules
   // side by side across the face, so it reads as a board and not a stick
   const D = bat.D, N = vNorm(vSub(bat.N, vMul(D, vDot(bat.N, D)))), Wd = vNorm(vCross(D, N));
   const pt = (s, w) => { const q = vAdd(vAdd(bat.G, vMul(D, s * k)), vMul(Wd, w * k)); return [q[0], q[1], Math.max(.04, q[2])]; };
-  add(pt(-.02, 0), pt(BAT.handle, 0), .055 * k, .06 * k, () => BAT_TAPE);
+  add(pt(.02, 0), pt(BAT.handle, 0), .055 * k, .06 * k, () => BAT_TAPE);
   for (const w of [-BAT.half, BAT.half]) add(pt(BAT.blade + .06, w), pt(BAT.len - .05, w), BAT.r * k, BAT.r * k, () => BLADE);
   // a whip: when the blade moves further than it can be followed in one frame (a press right on the ball), smear it
   // with in-between blades along its path, solid like the bat itself
