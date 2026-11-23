@@ -119,11 +119,11 @@ const ROSE_IN = 15, ROSE_OUT = 23, FLASH_T = .45;  // the direction guide around
    Off the bat the ball is a loose body: gravity, bounces on the paving, rolls to a stop, and rebounds off the house
    fronts and the larger props. By timing grade (perfect, good, mistimed): speed out of the bat, its climb in degrees,
    and a random sideways error in degrees around the chosen direction. Perfect is hard and lofted, good is hard and
-   flat so it skids along the ground, mistimed is weak and loops up. */
+   driven down so it skids along the ground, mistimed is weak and loops up. */
 const SHOTS = [
   { speed: [14, 17], lift: [16, 48], scatter: 3 },
-  { speed: [10.5, 13], lift: [2, 7], scatter: 5 },
-  { speed: [4.5, 7.5], lift: [40, 62], scatter: 14 },
+  { speed: [11.5, 14], lift: [-10, 1], scatter: 5 },
+  { speed: [4, 7], lift: [32, 58], scatter: 14 },
 ];
 const PHYS_DT = 1 / 240;                           // the loose ball is stepped at a fixed rate, so a replay is exact
 const BOUNCE = .45, SKID = .8, BOUNCE_MIN = 1.2;   // paving: vertical restitution, speed kept along the ground per bounce
@@ -179,7 +179,10 @@ const FIELD_NAMES = Object.keys(FIELDS);
 /* fielding: after REACT seconds the chosen fielder runs at RUN_SPEED to where he can first reach the ball; he
    gathers a ball within GATHER_R of him and below GATHER_Z (chest height). Runs go by how far from the bat he
    gathered it: nearer than RUN_DIST[0] is no run, then 1, 2, and 3 beyond RUN_DIST[2] */
-const REACT = .22, RUN_SPEED = 5.4, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
+const REACT = .3, RUN_SPEED = 4.6, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
+// a ball that has not touched the ground, a wall or a prop is caught if it comes within CATCH_R of a fielder below
+// CATCH_Z (hands above the head). Anything that has touched something first is only fielded: clean catches only
+const CATCH_R = .7, CATCH_Z = 2.4;
 const RUN_DIST = [4, 6, 8.5];
 /* what a loose ball can hit besides the walls: upright drums (x, y, r, h) and boxes (x0, y0, x1, y1, h), matching
    the baked props. A ball above a prop's top lands on it. Plant leaves, the washing and the meter box don't count.
@@ -507,6 +510,7 @@ const POSE_BATTER = { crouch: .3, lean: .16, stance: .02, armR: .2, armL: .55 };
 const POSE_BOWLER = { stance: .12, armR: .2, armL: .1 };
 const POSE_FIELDER = { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 };
 const POSE_HOLD = { stance: .14, lean: .05, armR: -1.2, armL: .2 };   // ball in hand, held up to show it
+const POSE_CATCH = { stance: .1, lean: -.05, armR: -2.9, armL: -2.6 }; // caught: both hands up over the head
 // a figure palette for one team: a solid shirt, and trousers a shade darker so the figure keeps its waist
 const kitPalette = team => ({ shirt: team.body, stripe: team.body, legs: team.legs });
 const person = (spot, k, yaw, pose) => ({ x: spot.x, y: spot.y, yaw, pose, palette: { skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
@@ -770,14 +774,16 @@ function stepBall(b, dt) {
    moment any fielder can be at it: that fielder chases to that spot, the others stay set and watch. A boundary
    reached first beats them all. If the chase somehow falls through, it is planned again from where things are. */
 const team = () => [G.bowler, ...G.fielders];
-const canGather = b => b.touched && b.z <= GATHER_Z;
+const canCatch = b => !b.touched && b.z <= CATCH_Z;
+const canGather = b => b.touched ? b.z <= GATHER_Z : b.z <= CATCH_Z;
+const reachOf = b => b.touched ? GATHER_R : CATCH_R;
 function planChase(ball, react) {
   const sim = { ...ball }, players = team();
   while (sim.t < LIVE_MAX) {
     stepBall(sim, PHYS_DT);
     if (sim.event || sim.gone) break;
     if (canGather(sim)) {
-      const reach = Math.max(0, sim.t - ball.t - react) * RUN_SPEED + GATHER_R;
+      const reach = Math.max(0, sim.t - ball.t - react) * RUN_SPEED + reachOf(sim);
       for (const f of players) if (Math.hypot(f.x - sim.x, f.y - sim.y) <= reach) return { f, t: sim.t, x: sim.x, y: sim.y };
     }
     if (sim.still) break;
@@ -800,7 +806,7 @@ function stepFielders(d, dt) {
 // the fielder who can reach the ball now, if any
 function gatherer(b) {
   if (!canGather(b)) return null;
-  for (const f of team()) if (Math.hypot(f.x - b.x, f.y - b.y) <= GATHER_R) return f;
+  for (const f of team()) if (Math.hypot(f.x - b.x, f.y - b.y) <= reachOf(b)) return f;
   return null;
 }
 const runsFor = dist => RUN_DIST.findIndex(r => dist < r) < 0 ? 3 : RUN_DIST.findIndex(r => dist < r);
@@ -812,13 +818,15 @@ function stepLive(d) {
     stepFielders(d, PHYS_DT);
     const e = b.event;
     if (e) {
-      if (e.how === 'over') return finish(d, 'hit', { runs: 6, out: false, how: 'over the wall' }); // out comes later
+      // clean over a house front: lost in the neighbour's, and the batter is out
+      if (e.how === 'over') return finish(d, 'hit', { runs: 0, out: true, how: 'over the wall' });
       return finish(d, 'hit', { runs: e.touched ? 4 : 6, out: false, how: e.how });
     }
     const f = gatherer(b);
     if (f) {
-      b.held = f; b.vx = b.vy = b.vz = 0;
-      const dist = Math.hypot(b.x - b.from.x, b.y - b.from.y);
+      const caught = canCatch(b), dist = Math.hypot(b.x - b.from.x, b.y - b.from.y);
+      b.held = f; b.vx = b.vy = b.vz = 0; b.caught = caught;
+      if (caught) return finish(d, 'hit', { runs: 0, out: true, how: 'caught', by: f.name || 'bowler', dist });
       return finish(d, 'hit', { runs: runsFor(dist), out: false, how: 'fielded', by: f.name || 'bowler', dist });
     }
     if (b.gone) return finish(d, 'hit', { runs: 0, out: false, how: 'lost' });
@@ -847,8 +855,9 @@ function passStumps(d) {
   finish(d, 'backstop');
 }
 /* settle the ball. outcome = { runs, out, how } where how is 'wall' or 'chalk' (4 or 6), 'fielded' (0 to 3, with
-   by and dist), 'bowled', or 'beaten' (missed or left, into the drum) */
-const OUTCOME_TEXT = o => o.how === 'bowled' ? 'bowled' : o.runs === 4 ? 'four' : o.runs === 6 ? 'six' : o.runs ? o.runs + (o.runs > 1 ? ' runs' : ' run') : 'no run';
+   by and dist), 'caught' (out, with by), 'over the wall' (out), 'bowled' (out), or 'beaten' (missed or left, into
+   the drum, no run) */
+const OUTCOME_TEXT = o => o.how === 'bowled' || o.how === 'caught' ? o.how : o.how === 'over the wall' ? 'over the wall, out' : o.runs === 4 ? 'four' : o.runs === 6 ? 'six' : o.runs ? o.runs + (o.runs > 1 ? ' runs' : ' run') : 'no run';
 function finish(d, result, outcome) {
   d.stage = 'done';
   d.timer = DONE_T;
@@ -962,7 +971,7 @@ function update(dt) {
   if (d.stage === 'live' || d.stage === 'done' && d.timer > DONE_T - .7) {
     for (const f of team()) {
       if (f === G.bowler && G.time - d.t0 < d.runT + .4) continue;
-      f.pose = f.running && d.stage === 'live' ? { ...walkPose(14, .34), ...RUN_POSE } : f === G.bowler ? POSE_BOWLER : G.ball && G.ball.held === f ? POSE_HOLD : POSE_FIELDER;
+      f.pose = f.running && d.stage === 'live' ? { ...walkPose(14, .34), ...RUN_POSE } : f === G.bowler ? POSE_BOWLER : G.ball && G.ball.held === f ? (G.ball.caught ? POSE_CATCH : POSE_HOLD) : POSE_FIELDER;
     }
   } else if (d.stage === 'done' || d.stage === 'wait') walkFielders(dt);
   // the bowler: running in and following through, then walking back to his mark
@@ -1263,7 +1272,7 @@ const LANE = {
   WALL_X, WALL_Y, WALL_H_LEFT, WALL_H_BACK, PARAPET, CHALK_X, CHALK_Y, EDGE_X, EDGE_Y, PITCH_Y,
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
-const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
+const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
 const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, AGAINST_LINE, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
 const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
 // test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
