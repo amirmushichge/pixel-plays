@@ -1009,6 +1009,7 @@ function strike(d) {
   d.tHit = d.hitAt;
   d.tReact = REACT;
   d.chase = planChase(G.ball, REACT);
+  sfx('hit', sw.grade);
   for (const f of G.fielders) f.routeFor = null;  // they will walk back from wherever the chase takes them
   // off the middle it sparks; off the edge it scuffs up dust
   if (sw.grade < 2) burst(at, sw.grade ? 6 : 10, SPARK, sw.grade ? 2.2 : 3.4, 2.5, .3);
@@ -1140,10 +1141,12 @@ const runsFor = dist => RUN_DIST.findIndex(r => dist < r) < 0 ? 3 : RUN_DIST.fin
 function stepLive(d) {
   const b = G.ball, due = G.time - d.tHit;
   while (b.t + PHYS_DT <= due + 1e-9) {
+    const bounces = b.bounces, vz = b.vz;
     stepBall(b, PHYS_DT);
+    if (b.bounces > bounces) sfx('bounce', -vz / 7);
     stepFielders(d, PHYS_DT);
     const e = b.event;
-    if (e && e.how === 'wall') burst(e.at, 8, DUST, 1.4, 1.2, .45);
+    if (e && e.how === 'wall') { burst(e.at, 8, DUST, 1.4, 1.2, .45); sfx('wall', e.prop ? .7 : 1); }
     if (e) {
       // clean over a house front: lost in the neighbour's, and the batter is out
       if (e.how === 'over') return finish(d, 'hit', { runs: 0, out: true, how: 'over the wall' });
@@ -1173,6 +1176,7 @@ function passStumps(d) {
   // judged on its line at the bricks, after any movement
   if (Math.abs(b.y - PITCH_Y) <= BOWLED_HALF) {
     G.stumps = { down: true, t: d.tStumps, seed: d.n };
+    sfx('bricks');
     G.ball = { x: b.x, y: b.y, z: b.z, vx: -1.4, vy: (b.y - PITCH_Y) * 3, vz: 1.2 };
     return finish(d, 'bowled');
   }
@@ -1180,6 +1184,7 @@ function passStumps(d) {
   const ty = clamp(b.y, BACKSTOP.y - BACKSTOP.r * .6, BACKSTOP.y + BACKSTOP.r * .6);
   const dx = BACKSTOP.x - b.x, dy = ty - b.y, n = Math.hypot(dx, dy), v = d.v2 * .8;
   G.ball = { x: b.x, y: b.y, z: b.z, vx: dx / n * v, vy: dy / n * v, vz: Math.max(b.vz, .8) };
+  sfx('wall', .5);
   finish(d, 'backstop');
 }
 /* settle the ball. outcome = { runs, out, how } where how is 'wall' or 'chalk' (4 or 6), 'fielded' (0 to 3, with
@@ -1201,6 +1206,7 @@ function finish(d, result, outcome) {
   Object.assign(G.last, o, { field: G.field });
   G.history.push(G.last);
   G.react = o.out ? { kind: 'wicket', t0: G.time } : o.runs >= 4 ? { kind: 'boundary', t0: G.time } : null;
+  if (G.react) sfx(o.out ? 'groan' : 'cheer');
   setStatus(OUTCOME_TEXT(o));
   scoreBall(o);
 }
@@ -1448,7 +1454,7 @@ function update(dt) {
   if (G.chord && (G.time - G.chord.t0 >= CHORD_T || d.stage === 'flight' && G.time >= d.tStumps)) commitChord();
   if (d.stage === 'runup' && G.time >= d.tRelease) d.stage = 'flight';
   if (d.stage === 'flight') {
-    if (G.time >= d.tPitch) d.bounced = true;
+    if (G.time >= d.tPitch && !d.bounced) { d.bounced = true; sfx('bounce', .8); }
     if (d.hitAt != null && G.time >= d.hitAt) { strike(d); stepLive(d); }
     else if (G.time >= d.tStumps) passStumps(d);
     else G.ball = ballAt(d, G.time);
@@ -1988,8 +1994,84 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => heldArrows.delete(e.key));
 addEventListener('blur', () => heldArrows.clear());
 
-/* ---------- sound ---------- */
-let muted = false;
+/* ---------- sound ----------
+   Web Audio, as in Tie-Break: short oscillator blips and filtered noise, no files. The context starts on the first
+   press or key (browsers only allow sound after a gesture); headless and muted play stays silent */
+let muted = false, audio = null, noiseBuf = null;
+function ensureAudio() {
+  if (audio) { if (audio.state === 'suspended') audio.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio = new AC();
+  noiseBuf = audio.createBuffer(1, audio.sampleRate / 2, audio.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+}
+addEventListener('pointerdown', ensureAudio, true);
+addEventListener('keydown', ensureAudio, true);
+// filtered noise: a slap, a clatter, a crowd's breath
+function hiss(at, length, level, freq, q = .8, type = 'bandpass') {
+  const src = audio.createBufferSource(), gain = audio.createGain(), filter = audio.createBiquadFilter();
+  src.buffer = noiseBuf;
+  filter.type = type; filter.frequency.value = freq; filter.Q.value = q;
+  gain.gain.setValueAtTime(.0005, at);
+  gain.gain.exponentialRampToValueAtTime(level, at + Math.min(.01, length / 4));
+  gain.gain.exponentialRampToValueAtTime(.0005, at + length);
+  src.connect(filter).connect(gain).connect(audio.destination);
+  src.start(at, Math.random() * .2); src.stop(at + length + .02);
+}
+// a pitch glide from f0 to f1, fading out: a knock, a thud, a voice
+function glide(at, f0, f1, length, level, type = 'sine', attack = .005) {
+  const osc = audio.createOscillator(), gain = audio.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(f0, at);
+  osc.frequency.exponentialRampToValueAtTime(f1, at + length);
+  gain.gain.setValueAtTime(.0005, at);
+  gain.gain.exponentialRampToValueAtTime(level, at + attack);
+  gain.gain.exponentialRampToValueAtTime(.0005, at + length);
+  osc.connect(gain).connect(audio.destination);
+  osc.start(at); osc.stop(at + length + .02);
+}
+const jit = (a, b) => a + Math.random() * (b - a);  // sound only: never the game's seeded rng
+function sfx(kind, amount = 1) {
+  if (!audio || muted || audio.state !== 'running') return;
+  const now = audio.currentTime + .005;
+  if (kind === 'hit') {
+    // bat on tennis ball: a hollow pock, sharper off the middle, dull off the edge
+    const edge = amount >= 2;
+    hiss(now, .03, edge ? .08 : .16, edge ? 1400 : 2600);
+    glide(now, edge ? 380 : 560, edge ? 150 : 180, edge ? .06 : .08, edge ? .12 : .18 + .06 * (amount === 0), 'square');
+  } else if (kind === 'bounce') {
+    glide(now, 200, 90, .07, .04 + .16 * Math.min(1, amount), 'sine');
+    hiss(now, .02, .03 * Math.min(1, amount), 1800);
+  } else if (kind === 'wall') {
+    // a thump on plaster (or the oil drum)
+    glide(now, 120, 60, .16, .26 * amount, 'triangle');
+    hiss(now, .08, .1 * amount, 500, 1.2);
+  } else if (kind === 'bricks') {
+    glide(now, 150, 70, .12, .2, 'triangle');
+    for (let k = 0; k < 6; k++) {
+      const at = now + .02 + k * jit(.05, .09);
+      hiss(at, .05, jit(.06, .12), jit(900, 1700), 2);
+      glide(at, jit(500, 800), jit(250, 400), .04, .05, 'square');
+    }
+  } else if (kind === 'cheer') {
+    // a few kids: rising "yay"s with a wobble, over a breathy roar
+    hiss(now, .9, .05, 1800, .5);
+    for (let k = 0; k < 4; k++) {
+      const at = now + jit(0, .18), f = jit(520, 760);
+      glide(at, f, f * jit(1.25, 1.5), jit(.35, .55), .045, 'triangle', .04);
+    }
+    for (let k = 0; k < 6; k++) hiss(now + .1 + k * jit(.08, .13), .05, jit(.03, .06), jit(1500, 2600));
+  } else if (kind === 'groan') {
+    // the batting kids: a falling "ohh"
+    for (let k = 0; k < 3; k++) {
+      const at = now + jit(0, .08), f = jit(260, 340);
+      glide(at, f, f * .62, jit(.6, .8), .06, 'sawtooth', .06);
+    }
+    hiss(now, .5, .03, 600, .7, 'lowpass');
+  }
+}
 const muteButton = document.getElementById('mute');
 muteButton.addEventListener('click', () => {
   muted = !muted;
@@ -2110,6 +2192,9 @@ window.__cricket = {
   newMatch, replay, resultText, hidesView, clearWalk,
   match(patch) { if (patch) Object.assign(G.match, patch); renderHud(); return G.match; },
   MATCH: { OVERS, WICKETS, TARGET, REPLAY_T },
+  // sound: play one effect now (starts the audio context if the page allows it); audio() is its state, or null
+  sound(kind, amount) { ensureAudio(); sfx(kind, amount); return audio && audio.state; },
+  audio: () => audio && { state: audio.state, muted },
 };
 </script>
 </body>
