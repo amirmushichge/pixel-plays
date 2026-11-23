@@ -8,6 +8,7 @@ window.PixelPlays = (() => {
     { id: 'laundry', title: 'Rooftop Laundry' },
     { id: 'tie-break', title: 'Tie-Break' },
     { id: 'mini-ramp', title: 'Mini Ramp' },
+    { id: 'cricket', title: 'Cricket' },
   ];
   const MUSIC_VOLUME = .4;
   const CREDITS = [
