@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cricket</title>
+<style>
+  :root { --ink: #1c1b19; --muted: #8b877f; --paper: #fff; --a: #2f4f86; --b: #3e7a56; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--paper); color: var(--ink); }
+  body { font: 13px/1.35 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  canvas { display: block; image-rendering: pixelated; touch-action: none; cursor: pointer; outline: none; }
+  .hud { position: fixed; left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right)); display: flex; justify-content: space-between; gap: 16px; pointer-events: none; }
+  #scores { position: fixed; top: max(14px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); display: grid; gap: 2px; pointer-events: none; }
+  #bottom { bottom: max(14px, env(safe-area-inset-bottom)); align-items: flex-end; }
+  .team { display: flex; align-items: baseline; gap: 8px; }
+  .team b { font-size: 16px; font-weight: 600; min-width: 2ch; font-variant-numeric: tabular-nums; }
+  .team span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #you { color: var(--a); } #rival { color: var(--b); }
+  #status { color: var(--muted); }
+  button { pointer-events: auto; font: inherit; color: var(--muted); background: none; border: 0; padding: 10px; margin: -10px; cursor: pointer; }
+  button:hover, button:focus-visible { color: var(--ink); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" tabindex="0" aria-label="Cricket ground. You bat at the far end; the bowler runs in from the near end."></canvas></div>
+<div id="scores">
+  <div class="team" id="you"><b id="runs">0/0</b><span id="overs">0.0 ov</span></div>
+  <div class="team" id="rival"><span id="target"></span></div>
+</div>
+<div class="hud" id="bottom">
+  <div id="status" role="status" aria-live="polite"></div>
+  <button id="mute" type="button" aria-pressed="false">sound on</button>
+</div>
+<script src="../shell.js"></script>
+<script>
+PixelPlays.mount({
+  id: 'cricket',
+  rules: [
+    'You bat for your team and chase a target in 5 overs. Three wickets and you are all out.',
+    'A marker shows where each ball will land. Spin turns off the pitch; fast balls can wobble in, out or hold their line.',
+    'Pick one of 8 directions to hit: tap or click around the batter, or use the arrow keys. Timing decides how well you hit it.',
+    'Get bowled or caught and you lose a wicket.',
+  ],
+});
+</script>
+<script>window.PP_SCENE = { originY: 4, shadowX: .9, shadowY: -.6 };</script>
+<script src="../engine.js"></script>
+<script>
+'use strict';
+
+/* ---------- constants ----------
+   Field coordinates: u runs screen-right, v runs screen-down (towards the camera), both in world units.
+   The pitch lies along v, so the batter at the far (top) end faces the camera and the bowler runs up-screen. */
+const toWorld = (u, v) => ({ x: (u + v) / R2, y: (v - u) / R2 });
+const yawTo = (du, dv) => Math.atan2(dv - du, du + dv); // figure yaw that faces field direction (du, dv)
+
+const ISLAND_U = 17, ISLAND_V = 23.4, ROPE_U = 13.6, ROPE_V = 19.2;
+const PITCH_U = 1.5, PITCH_V = 7.6, STUMPS_V = 6.2, POPPING_V = 5, RETURN_U = 1.25;
+const STUMP_GAP = .24, STUMP_Z = .9, STUMP_R = .05;
+const FIG_SCALE = .9;
+const BAT_END = -1, BOWL_END = 1; // sign of v at each end: the batter's stumps are at v = -STUMPS_V
+
+const SKIN = [[222, 170, 132], [196, 146, 110], [170, 120, 88], [128, 88, 64], [214, 164, 128]];
+const HAIR = [[38, 28, 24], [60, 44, 34], [120, 92, 60], [30, 26, 24], [92, 62, 40]];
+// placeholder kits until the team kits land
+const KIT_BAT = { shirt: [58, 92, 150], stripe: [58, 92, 150], legs: [58, 92, 150] };
+const KIT_FIELD = { shirt: [70, 128, 92], stripe: [70, 128, 92], legs: [70, 128, 92] };
+const HELMET = [34, 42, 66], PADS = [232, 228, 216];
+const BLADE = [246, 226, 170], GRIP = [44, 44, 48], GLOVE = [236, 232, 220];
+const STUMP = [252, 246, 226], BAIL = [214, 176, 112];
+
+// roles in field coordinates; the six fielders leave every screen direction from the batter open
+const SPOTS = {
+  batter: { u: .8, v: -5.2 },
+  keeper: { u: -.5, v: -8.4 },
+  bowler: { u: -.8, v: 10.2 },
+  fielders: [
+    { name: 'point', u: -8.6, v: -5.4 },
+    { name: 'cover', u: -8.4, v: 2.6 },
+    { name: 'mid-off', u: -3.8, v: 11.2 },
+    { name: 'mid-on', u: 3.8, v: 11.2 },
+    { name: 'midwicket', u: 8.6, v: 1.2 },
+    { name: 'fine leg', u: 7.2, v: -13.2 },
+  ],
+};
+
+const FIELD_TONES = [[78, 116, 56], [85, 123, 59], [92, 130, 62], [99, 137, 65]];
+const PITCH_TONES = [[186, 168, 116], [194, 176, 122], [202, 184, 128], [210, 192, 134]];
+const ROPE = [238, 234, 220], LINE = rgb(248, 244, 232);
+const KIND_FIELD = 1, KIND_PITCH = 2;
+
+/* ---------- bake ---------- */
+function groundColor(x, y, ix, iy, i) {
+  const u = (x - y) / R2, v = (x + y) / R2;
+  const edge = Math.hypot(u / ISLAND_U, v / ISLAND_V);
+  const rough = edge + (noise(x * 1.3, y * 1.3) - .5) * .1;
+  if (rough > 1.04) return 0;
+  if (rough > .94 && hash(ix, iy) < (rough - .94) / .1) return 0;
+  const fine = hash(ix, iy), au = Math.abs(u), av = Math.abs(v);
+  if (au <= PITCH_U && av <= PITCH_V) {
+    kinds[i] = KIND_PITCH;
+    // creases are 1px lines: constant-v lines need about .1 units because v is squashed by half on screen
+    const popping = Math.abs(av - POPPING_V) < .11;
+    const bowling = Math.abs(av - STUMPS_V) < .11 && au <= RETURN_U;
+    const ret = Math.abs(au - RETURN_U) < .06 && av >= POPPING_V && av <= STUMPS_V + .7;
+    if ((popping || bowling || ret) && fine > .06) return LINE;
+    // the ends wear darker where the bowlers land and the batters stand
+    const wear = Math.max(0, 1 - Math.abs(av - 3.6) / 1.8) * Math.max(0, 1 - au / 1.1) * .4;
+    const t = .58 + (noise(u * 2, v * .8) - .5) * .5 - wear + Math.sin(v * 3 + noise(u, v) * 2) * .04;
+    if (fine > .99) return rgb(...PITCH_TONES[0]);
+    return rgb(...PITCH_TONES[clamp(Math.floor(t * 4 + (bayerAt(ix, iy) - .5) * .6), 0, 3)]);
+  }
+  if (Math.hypot(u / ROPE_U, v / ROPE_V) < 1.02) {
+    kinds[i] = KIND_FIELD;
+    // mown bands across the pitch, in neighbouring tones so the dither never reads as a checkerboard
+    const band = Math.floor((v + 40) / 2.8) % 2;
+    const t = (band ? .62 : .38) + (noise(u * .5, v * .5) - .5) * .35 + (fine - .5) * .12;
+    return rgb(...FIELD_TONES[clamp(Math.floor(t * 4 + (bayerAt(ix, iy) - .5) * .5), 0, 3)]);
+  }
+  kinds[i] = KIND_GRASS;
+  const t = noise(x * .9, y * .9) * 1.15 + (fine - .5) * .55 - .08;
+  return rgb(...GRASS[clamp(Math.floor(t * 4.2), 0, 3)]);
+}
+// a flat board facing the camera, running along u at depth v
+function board(u0, u1, v, z0, z1, c) {
+  const ramp = rampOf(c);
+  for (let u = u0; u <= u1; u += .035) for (let z = z0; z <= z1; z += .035) {
+    const top = z > z1 - .1;
+    const tone = top ? 4 : 3 - (noise(u * 3, z * 6) > .8 ? 1 : 0);
+    const p = toWorld(u, v);
+    plot(p.x, p.y, z, ramp[tone]);
+  }
+}
+function post(u, v, z, c) {
+  const p = toWorld(u, v);
+  capsule([p.x, p.y, 0], [p.x, p.y, z], .07, .07, () => c, 'solid');
+  castShadow(p.x, p.y, z * .5, .08);
+}
+function rope() {
+  const n = 220;
+  let prev = null;
+  for (let k = 0; k <= n; k++) {
+    const a = k / n * Math.PI * 2, p = toWorld(Math.cos(a) * ROPE_U, Math.sin(a) * ROPE_V);
+    if (prev) capsule([prev.x, prev.y, .08], [p.x, p.y, .08], .08, .08, () => ROPE, 'solid');
+    if (k % 2 === 0) castShadow(p.x, p.y, .08, .1, 1, 0);
+    prev = p;
+  }
+}
+function sightscreen() {
+  const v = -ROPE_V - 1.5;
+  board(-3, 3, v, .4, 2.1, [236, 232, 220]);
+  for (const u of [-2.6, 0, 2.6]) post(u, v + .12, .45, [120, 116, 108]);
+  for (let u = -3.2; u <= 3.2; u += .3) {
+    const p = toWorld(u, v);
+    castShadow(p.x, p.y, 1.25, .3);
+  }
+}
+// a small hut with a dark board of digits and a roof
+function scoreboard() {
+  const c = toWorld(-11.6, -15.4), hw = 1.3, hd = .9;
+  const wood = [150, 104, 64], roof = [112, 60, 46];
+  box(c.x - hw, c.y - hd, 0, c.x + hw, c.y + hd, 1.9, wood, 3);
+  box(c.x - hw - .15, c.y - hd - .15, 1.9, c.x + hw + .15, c.y + hd + .15, 2.1, roof, 4);
+  // the board faces +y in world space, the side the camera sees
+  const panel = rgb(40, 44, 42), digit = rgb(244, 236, 200);
+  for (let a = -hw + .25; a <= hw - .25; a += .03) for (let z = .7; z <= 1.6; z += .03) plot(c.x + a, c.y + hd + .02, z, panel);
+  for (let k = 0; k < 3; k++) for (let a = 0; a < .45; a += .03) for (let z = 0; z < .5; z += .03) {
+    const lit = (a < .08 || a > .37 || z < .08 || z > .42 || Math.abs(z - .25) < .05) && hash(k * 9 + (a * 30 | 0), z * 30 | 0) > .25;
+    if (lit) plot(c.x - hw + .45 + k * .7 + a, c.y + hd + .03, .9 + z, digit);
+  }
+  for (let a = -hw; a <= hw; a += .3) for (let z = .2; z < 2; z += .45) castShadow(c.x + a, c.y, z, .5);
+}
+function bench(u, v) {
+  const c = toWorld(u, v), seat = [156, 112, 66];
+  box(c.x - 1.2, c.y - .25, .55, c.x + 1.2, c.y + .25, .66, seat, 7);
+  for (const dx of [-1.05, .95]) box(c.x + dx, c.y - .2, 0, c.x + dx + .12, c.y + .2, .55, [64, 58, 54], 8);
+  for (let dx = -1.1; dx <= 1.1; dx += .3) castShadow(c.x + dx, c.y, .6, .26);
+}
+function bake() {
+  zb.fill(-1e9);
+  pix.fill(rgb(255, 255, 255));
+  for (let iy = 0; iy < H; iy++) for (let ix = 0; ix < W; ix++) {
+    const g = unproject(ix + .5, iy + .5), i = iy * W + ix, c = groundColor(g.x, g.y, ix, iy, i);
+    if (!c) continue;
+    pix[i] = c; ground[i] = 1;
+    zb[i] = (g.x + g.y) / R2 * COS;
+  }
+  growGrass();
+  groundZ.set(zb);
+
+  const t1 = toWorld(13.2, -11.8), t2 = toWorld(-14.2, 9.6);
+  growTree(t1.x, t1.y, .85, 300);
+  growTree(t2.x, t2.y, .75, 260, 500);
+  rope();
+  sightscreen();
+  scoreboard();
+  bench(12.4, 12.6);
+  flushShadows();
+  bakeOcclusion();
+  staticShadow.set(shadowMask);
+  applyShadows(groundZ);
+
+  bakedPix.set(pix);
+  bakedZ.set(zb);
+}
+
+/* ---------- game state ---------- */
+const person = (spot, k, kit, face) => ({ ...spot, yaw: face, palette: { ...kit, skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
+const G = {
+  phase: 'idle', time: 0, status: '',
+  stumps: { [BAT_END]: { down: 0 }, [BOWL_END]: { down: 0 } },
+  batter: person(SPOTS.batter, 0, KIT_BAT, yawTo(-1, .8)),
+  keeper: person(SPOTS.keeper, 1, KIT_FIELD, yawTo(0, 1)),
+  bowler: person(SPOTS.bowler, 2, KIT_FIELD, yawTo(0, -1)),
+  fielders: SPOTS.fielders.map((s, k) => person(s, k + 3, KIT_FIELD, yawTo(SPOTS.batter.u - s.u, SPOTS.batter.v - s.v))),
+};
+G.batter.palette.hair = HELMET;
+G.batter.palette.legs = PADS;
+
+const nodes = {
+  runs: document.getElementById('runs'),
+  overs: document.getElementById('overs'),
+  target: document.getElementById('target'),
+  status: document.getElementById('status'),
+};
+function setStatus(text) {
+  if (text === G.status) return;
+  G.status = text;
+  nodes.status.textContent = text;
+}
+
+/* ---------- update ---------- */
+function update(dt) {
+  G.time += dt;
+}
+
+/* ---------- drawing ---------- */
+function drawStumps(end) {
+  const v = end * STUMPS_V;
+  for (let k = -1; k <= 1; k++) {
+    const p = toWorld(k * STUMP_GAP, v);
+    dynamicAdd([p.x, p.y, 0], [p.x, p.y, STUMP_Z], STUMP_R, STUMP_R, () => STUMP);
+  }
+  const a = toWorld(-STUMP_GAP, v), b = toWorld(STUMP_GAP, v);
+  dynamicAdd([a.x, a.y, STUMP_Z + .04], [b.x, b.y, STUMP_Z + .04], .04, .04, () => BAIL);
+}
+function drawFielder(p, pose) {
+  const w = toWorld(p.u, p.v);
+  return figure(w.x, w.y, p.yaw, { scale: FIG_SCALE, ...pose }, p.palette, dynamicAdd);
+}
+function drawBatter() {
+  const p = G.batter, w = toWorld(p.u, p.v);
+  const hand = drawFielder(p, { crouch: .3, lean: .22, stance: .14, armR: .55, armL: .5 });
+  // the bat hangs from the hands to a toe resting just in front of the feet
+  const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), k = FIG_SCALE;
+  const toe = [w.x + (fx * .7 - fy * .3) * k, w.y + (fy * .7 + fx * .3) * k, .12];
+  const dx = toe[0] - hand[0], dy = toe[1] - hand[1], dz = toe[2] - hand[2], len = Math.hypot(dx, dy, dz);
+  const neck = [hand[0] + dx / len * .3, hand[1] + dy / len * .3, hand[2] + dz / len * .3];
+  dynamicAdd(hand, neck, .05, .05, () => GRIP);
+  dynamicAdd(neck, toe, .1, .11, () => BLADE);
+}
+function drawKeeper() {
+  const hand = drawFielder(G.keeper, { crouch: 1.5, lean: .55, stance: .34, armR: 1.25, armL: 1.25 });
+  dynamicAdd(hand, hand, .13, .13, () => GLOVE);
+}
+function draw() {
+  pix.set(bakedPix);
+  zb.set(bakedZ);
+  pendingShadows.length = 0;
+  drawStumps(BAT_END);
+  drawStumps(BOWL_END);
+  drawBatter();
+  drawKeeper();
+  drawFielder(G.bowler, { stance: .12, armR: .12, armL: .1 });
+  for (const f of G.fielders) drawFielder(f, { crouch: .18, lean: .16, stance: .2, armR: .35, armL: .35 });
+  const windT = STILL ? 0 : Math.floor(G.time * WIND_FPS) / WIND_FPS;
+  drawLeaves(windT);
+  drawTufts(windT);
+  flushShadows();
+  applyShadows(bakedZ);
+  shadeEdges();
+  ctx.putImageData(image, 0, 0);
+}
+
+/* ---------- sound ---------- */
+let muted = false;
+const muteButton = document.getElementById('mute');
+muteButton.addEventListener('click', () => {
+  muted = !muted;
+  muteButton.textContent = muted ? 'sound off' : 'sound on';
+  muteButton.setAttribute('aria-pressed', String(muted));
+});
+
+/* ---------- boot ---------- */
+addEventListener('resize', fit);
+fit();
+bake();
+let last = performance.now();
+function frame(now) {
+  update(Math.min(.04, (now - last) / 1000));
+  last = now;
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__cricket = { G, toWorld, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
+</script>
+</body>
+</html>
