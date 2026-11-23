@@ -122,6 +122,9 @@ const DIR_WORLD = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], 
 const LEG_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG > 0), OFF_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG < 0);
 const CHORD_T = .06;                               // two arrow keys pressed this close together make a diagonal
 const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
+// the match: chase a random target in OVERS overs of six balls with WICKETS wickets. The rival's score is target - 1
+const OVERS = 5, WICKETS = 3, TARGET = [35, 70];
+const REPLAY_T = .6;                               // the result has to be up this long before a tap starts a new match
 const HOLD_T = .9;                                 // of that, how long everyone holds still (or celebrates) first
 const ROSE_IN = 15, ROSE_OUT = 23, FLASH_T = .45;  // the direction guide around the batter, in canvas pixels
 // the swing cue (see drawCue): shown for the last CUE_T s, solid for CUE_NOW s either side of the moment; tick gap, length
@@ -550,6 +553,9 @@ const G = {
   chord: null, auto: true, frozen: false, force: {},
   timeouts: 0,  // how often a live ball hit the LIVE_MAX backstop
   react: null, fx: [],  // the latest wicket or boundary reaction { kind, t0 }, and contact sparks / dust in the air
+  // the chase: target, runs, wickets, balls completed, this over's balls ('·', '1', '4', 'W', ...), and the result
+  // ('win' | 'lose' | 'tie', with how: 'target' | 'all out' | 'overs') once it is decided; endT is when it was shown
+  match: null,
 };
 G.batter.swing = null;
 // dress the batter in your kit and the fielding side in the rival's (drawn from the other eight if not given)
@@ -878,10 +884,11 @@ const releasePose = type => ({ scale: FIG_SCALE, stance: .3, lean: BOWLERS[type]
 // start a delivery now. opts (and G.force) may fix: type 'fast'|'spin', line 'stumps'|'off'|'leg', move 'in'|'away'|'none',
 // amount (sideways movement at the stumps), offset (aim at the stumps relative to PITCH_Y), length (pitching x)
 function bowl(opts = {}) {
-  if (G.phase === 'pick') return null;
+  if (G.phase !== 'idle' || G.match && G.match.result) return null;
   const f = { ...G.force, ...opts };
   if (G.ballInOver >= 6) {
     G.over++; G.ballInOver = 0;
+    if (G.match) G.match.thisOver = [];
     G.overType = G.overType === 'fast' ? 'spin' : 'fast';
     setStatus(G.overType === 'fast' ? 'fast bowler this over' : 'spinner this over');
   }
@@ -1167,7 +1174,56 @@ function finish(d, result, outcome) {
   G.history.push(G.last);
   G.react = o.out ? { kind: 'wicket', t0: G.time } : o.runs >= 4 ? { kind: 'boundary', t0: G.time } : null;
   setStatus(OUTCOME_TEXT(o));
+  scoreBall(o);
 }
+
+/* ---------- the match ----------
+   Every ball counts (there are no extras). The chase is won as soon as the runs reach the target; it is lost when
+   the wickets or the balls run out first, and tied if it stops exactly one short. The ball that decides it still
+   plays out; the result goes up when its DONE_T is over (see update) */
+function newMatch(target) {
+  G.match = { target: target || Math.round(range(TARGET)), runs: 0, wkts: 0, balls: 0, thisOver: [], result: null, how: null, endT: null };
+  G.phase = 'idle';
+  resetDelivery();
+  setStatus(G.you.name + ' need ' + G.match.target + ' to win');
+  renderHud();
+}
+const ballMark = o => o.out ? 'W' : o.runs ? String(o.runs) : '·';
+function scoreBall(o) {
+  const m = G.match;
+  if (!m || m.result) return;
+  m.runs += o.runs; m.wkts += o.out ? 1 : 0; m.balls++;
+  m.thisOver.push(ballMark(o));
+  if (m.runs >= m.target) { m.result = 'win'; m.how = 'target'; }
+  else if (m.wkts >= WICKETS || m.balls >= OVERS * 6) {
+    m.result = m.runs === m.target - 1 ? 'tie' : 'lose';
+    m.how = m.wkts >= WICKETS ? 'all out' : 'overs';
+  }
+  renderHud();
+}
+const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+function resultText(m) {
+  const you = G.you.name, rival = G.rival.name, left = OVERS * 6 - m.balls;
+  if (m.result === 'win') return you + ' win by ' + plural(WICKETS - m.wkts, 'wicket') + (left ? ', ' + plural(left, 'ball') + ' to spare' : ' off the last ball');
+  const score = m.how === 'all out' ? 'all out for ' + m.runs + ': ' : '';
+  if (m.result === 'tie') return m.how === 'all out' ? 'all out for ' + m.runs + ', scores level: a tie' : 'a tie on ' + m.runs;
+  return score + rival + ' win by ' + plural(m.target - 1 - m.runs, 'run');
+}
+// the ball that decided the match has played out: show the result and wait for a tap
+function endMatch() {
+  const m = G.match;
+  G.phase = 'over';
+  m.endT = G.time;
+  setStatus(resultText(m) + ' · tap to play again');
+  renderHud();
+}
+// after the result, a tap, click or key goes back to the team picker with your team already picked
+function replay() {
+  if (G.phase !== 'over' || G.time - G.match.endT < REPLAY_T) return false;
+  openPicker();
+  return true;
+}
+function renderHud() {}
 // a loose ball: gravity, bounces off the paving, and the drum stops it dead
 function stepLoose(b, dt) {
   b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt; b.vz -= GRAVITY * dt;
@@ -1285,7 +1341,11 @@ function update(dt) {
     else if (b && b.t != null) { const due = G.time - d.tHit; while (b.t + PHYS_DT <= due + 1e-9) stepBall(b, PHYS_DT); }
     else if (b) stepLoose(b, dt);
     if (b && b.gone) G.ball = null;
-    if ((d.timer -= dt) <= 0) { d.stage = 'wait'; d.timer = .5; G.ball = null; setField(nextField()); }
+    if ((d.timer -= dt) <= 0) {
+      d.stage = 'wait'; d.timer = .5; G.ball = null;
+      if (G.match && G.match.result) endMatch();
+      else setField(nextField());
+    }
   } else if (d.stage === 'wait') {
     d.timer -= dt;
   }
@@ -1747,7 +1807,7 @@ const inputBlocked = () => G.phase === 'pick' || !!document.querySelector('dialo
 const pressTime = e => G.frozen ? G.time : G.time + clamp((e.timeStamp - last) / 1000, 0, .04);
 canvas.addEventListener('pointerdown', e => {
   canvas.focus({ preventScroll: true });
-  if (inputBlocked()) return;
+  if (inputBlocked() || replay() || G.phase === 'over') return;
   const r = canvas.getBoundingClientRect(), c = roseCenter();
   const dx = (e.clientX - r.left) * W / r.width - c.sx, dy = (e.clientY - r.top) * H / r.height - c.sy;
   if (Math.hypot(dx, dy) < 3) return;
@@ -1756,6 +1816,14 @@ canvas.addEventListener('pointerdown', e => {
 // keys work wherever focus is on the page (after the mute button, say), except in a text field or on a link
 addEventListener('keydown', e => {
   if (inputBlocked() || e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input, textarea, select, a')) return;
+  // after the result any key of the game (or Enter / Space) plays again, unless it is on a button (mute, change team)
+  if (G.phase === 'over') {
+    if (e.repeat || !(ARROWS[e.key] || KEY_DIRS[e.code] != null || e.key === 'Enter' || e.key === ' ')) return;
+    if (e.target.closest('button') && !ARROWS[e.key] && KEY_DIRS[e.code] == null) return;
+    e.preventDefault();
+    replay();
+    return;
+  }
   if (ARROWS[e.key]) {
     e.preventDefault();
     if (e.repeat) return;
@@ -1819,7 +1887,8 @@ teamGrid.addEventListener('keydown', e => {
 // before the first pick there is nothing to go back to, so Escape cannot close the picker
 picker.addEventListener('cancel', e => { if (!picker.dataset.picked) e.preventDefault(); });
 picker.addEventListener('close', () => {
-  if (G.phase === 'pick') G.phase = 'idle';
+  // closed without a pick: carry on with the match, or after a result start the next one in the same shirts
+  if (G.phase === 'pick') { if (G.match && G.match.result) newMatch(); else G.phase = 'idle'; }
   canvas.focus({ preventScroll: true });
 });
 function openPicker() {
@@ -1833,9 +1902,7 @@ function chooseTeam(id) {
   setTeams(id);
   picker.dataset.picked = '1';
   nodes.match.textContent = G.you.name + ' v ' + G.rival.name;
-  setStatus(G.you.name + ' bat; ' + G.rival.name + ' field.');
-  resetDelivery();
-  G.phase = 'idle';
+  newMatch();
   picker.close();
   canvas.focus();
 }
@@ -1894,6 +1961,11 @@ window.__cricket = {
     return pred(G);
   },
   dirFromScreen, roseCenter,
+  // the match: newMatch(target?) starts one now (teams unchanged); match(patch?) merges patch into G.match and
+  // returns it, so a test can set up any score (e.g. { runs: 50, wkts: 2, balls: 29 }); replay() is the result tap
+  newMatch, replay, resultText,
+  match(patch) { if (patch) Object.assign(G.match, patch); renderHud(); return G.match; },
+  MATCH: { OVERS, WICKETS, TARGET, REPLAY_T },
 };
 </script>
 </body>
