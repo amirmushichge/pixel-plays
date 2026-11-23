@@ -31,6 +31,7 @@
   #picker::backdrop { background: rgba(255, 255, 255, .72); }
   #picker h2 { margin: 0 0 4px; font: inherit; font-weight: 600; }
   #picker p { margin: 0 0 12px; color: var(--muted); }
+  #picker #picker-new { color: var(--ink); }
   #teams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
   #teams button { display: grid; justify-items: center; gap: 6px; margin: 0; padding: 10px 4px 8px; color: var(--ink); border: 1px solid transparent; min-height: 64px; touch-action: manipulation; }
   #teams button:hover { border-color: var(--ink); }
@@ -53,8 +54,9 @@
   <div id="status" role="status" aria-live="polite"></div>
   <div class="buttons"><button id="team" type="button">change team</button><button id="mute" type="button" aria-pressed="false">sound on</button></div>
 </div>
-<dialog id="picker" aria-labelledby="picker-title" aria-describedby="picker-hint">
+<dialog id="picker" aria-labelledby="picker-title" aria-describedby="picker-new picker-hint">
   <h2 id="picker-title">Pick your team</h2>
+  <p id="picker-new" hidden>Picking a team starts a new match. Press Escape to go back to this one.</p>
   <p id="picker-hint">You bat in their 1992 kit. The fielding side is drawn from the other eight.</p>
   <div id="teams" role="group" aria-label="Teams"></div>
 </dialog>
@@ -2560,6 +2562,8 @@ picker.addEventListener('close', () => {
   canvas.focus({ preventScroll: true });
 });
 function openPicker() {
+  // mid-match, picking a team throws the score away, so say so (Escape goes back to the match as it was)
+  document.getElementById('picker-new').hidden = !(G.match && !G.match.result && G.phase !== 'pick');
   G.phase = 'pick';
   const k = Math.max(0, picker.dataset.picked ? TEAMS.indexOf(G.you) : 0);
   teamButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(!!picker.dataset.picked && i === k)));
