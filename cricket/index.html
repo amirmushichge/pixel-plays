@@ -143,10 +143,13 @@ const CUE_T = .6, CUE_NOW = .05, CUE_GAP = [.12, 1.5], CUE_TICK = .45;
    and a random sideways error in degrees around the chosen direction. Perfect is hard and lofted, good is hard and
    driven down so it skids along the ground, mistimed is weak and loops up. */
 const SHOTS = [
-  { speed: [14, 17], lift: [16, 48], scatter: 3 },
+  { speed: [13.5, 17], lift: [10, 44], scatter: 6 },
   { speed: [11.5, 14], lift: [-10, 1], scatter: 5 },
-  { speed: [4, 7], lift: [32, 58], scatter: 14 },
+  { speed: [4.5, 8], lift: [6, 40], scatter: 14 },
 ];
+/* the glance behind (SE): played fine, past the bricks and the drum on the side away from the camera, so it is a
+   real shot (four, or runs if fine cuts it off) and not a thud into the bricks. It is played softer and kept low */
+const GLANCE = 3, GLANCE_PACE = .72, GLANCE_LIFT = 12;
 const PHYS_DT = 1 / 240;                           // the loose ball is stepped at a fixed rate, so a replay is exact
 const BOUNCE = .45, SKID = .8, BOUNCE_MIN = 1.2;   // paving: vertical restitution, speed kept along the ground per bounce
 const ROLL = 3.2, VERGE_ROLL = 14;                 // rolling slow-down on the paving, and in the weeds past the chalk
@@ -178,28 +181,27 @@ const BLADE = [242, 214, 148];                 // pale willow; the engine's edge
 const BATTER = { x: 7.5, y: PITCH_Y + LEG * .5 }; // on the leg side of the stumps line, so the ball passes in front of his pads
 const BOWLER = { x: -6.4, y: -.55 };
 const BOWLER_YAW = 0;                // he runs straight down the pitch, whichever side of it the batter stands
-// the lane's first field: fielders between the eight screen directions from the batter
-const FIELDERS = [
-  { name: 'mid-off', x: -1.6, y: 3.9 },
-  { name: 'cover', x: 4.6, y: 4.4 },
-  { name: 'mid-on', x: -.7, y: -4.1 },
-  { name: 'square leg', x: 9.4, y: -4.9 },
-];
 /* field placings, one per over in a shuffled order, so the gaps move. Spots are given as [direction, distance]
-   from the bat: the direction is an index into DIRS (fractions sit between two shot directions). The bowler is
-   the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW). */
-const FIELD_X = 6.9;                               // where the placings are measured from
+   from the batter: the direction is an index into DIRS (fractions sit between two shot directions). The bowler is
+   the fifth fielder, wherever his follow-through leaves him, and covers the straight hit (NW).
+   Nobody may stand between the camera and the batter, his bricks or the pitch (see hidesView), so the open
+   corner straight down the screen (S) is guarded from the corner of the chalk, and the glance behind (SE) from
+   fine, off the line of the bricks. Any spot that would hide the view is nudged clear when the page loads */
 const spot = (name, k, r) => {
   const a = (225 + 45 * k) * Math.PI / 180;
-  return { name, x: +(FIELD_X + Math.cos(a) * r).toFixed(2), y: +(PITCH_Y + Math.sin(a) * r).toFixed(2) };
+  return { name, x: +(BATTER.x + Math.cos(a) * r).toFixed(2), y: +(BATTER.y + Math.sin(a) * r).toFixed(2) };
 };
+const CORNER = { name: 'deep corner', x: CHALK_X - .55, y: CHALK_Y - .6 };
+const FINE = { name: 'fine', x: 10.6, y: -3.9 };
 const FIELDS = {
-  ring: FIELDERS,                                                     // four between the gaps, none on a line
-  off: [spot('point', 4, 4.6), spot('cover', 5, 4.4), spot('mid-off', 6, 5.6), spot('midwicket', 0, 5.2)],
-  leg: [spot('square leg', 2, 4.4), spot('midwicket', 1, 4.6), spot('mid-on', 0, 6.5), spot('cover', 5, 4.5)],
-  deep: [spot('long-on', 7.5, 8), spot('long-off', 6.5, 7.5), spot('point', 4, 4.2), spot('fine leg', 2.5, 4)],
+  ring: [spot('midwicket', 5.5, 5.2), spot('cover', .5, 5), spot('point', 1.5, 4.6), { ...CORNER }],  // in the gaps
+  off: [spot('mid-off', 0, 5.6), spot('cover', 1, 4.8), spot('point', 2, 4.6), spot('square', 5, 5.3)],
+  leg: [{ ...CORNER }, spot('square leg', 5, 5.3), spot('midwicket', 6, 5.4), spot('cover', 1, 5)],
+  deep: [spot('long-on', 6.6, 7.6), spot('long-off', .4, 7.4), { ...FINE }, { ...CORNER }],
 };
+const FIELDERS = FIELDS.ring;                      // the field the lane starts with
 const FIELD_NAMES = Object.keys(FIELDS);
+const FIELD_BOUNDS = { x0: WALL_X + 1.4, x1: CHALK_X - .45, y0: WALL_Y + 1.3, y1: CHALK_Y - .45 };
 /* fielding: after REACT seconds the chosen fielder runs at RUN_SPEED to where he can first reach the ball; he
    gathers a ball within GATHER_R of him and below GATHER_Z (chest height). Runs go by how far from the bat he
    gathered it: nearer than RUN_DIST[0] is no run, then 1, 2, and 3 beyond RUN_DIST[2] */
@@ -981,8 +983,16 @@ function strike(d) {
   const at = ballAt(d, d.hitAt), sw = d.swing, S = SHOTS[sw.grade], f = G.force;
   const w = DIR_WORLD[sw.dir], aim = Math.atan2(w[1], w[0]);
   const scatter = f.scatter != null ? f.scatter : (rng() * 2 - 1) * S.scatter;
-  const lift = f.lift != null ? f.lift : range(S.lift), speed = f.speed != null ? f.speed : range(S.speed);
-  const yaw = aim + scatter * Math.PI / 180, flat = Math.cos(lift * Math.PI / 180) * speed;
+  let lift = f.lift != null ? f.lift : range(S.lift), speed = f.speed != null ? f.speed : range(S.speed);
+  let yaw = aim + scatter * Math.PI / 180, flat = Math.cos(lift * Math.PI / 180) * speed;
+  if (sw.dir === GLANCE) {
+    // aim a ball's width and more past the far side of the bricks and the drum, at the chalk
+    const clearY = Math.min(BACKSTOP.y - BACKSTOP.r, PITCH_Y - BRICK.l) - 1;
+    yaw = Math.atan2(clearY - at.y, CHALK_X - at.x) + scatter * Math.PI / 180;
+    if (f.lift == null) lift = Math.min(lift, GLANCE_LIFT);
+    if (f.speed == null) speed *= GLANCE_PACE;
+    flat = Math.cos(lift * Math.PI / 180) * speed;
+  }
   G.ball = {
     x: at.x, y: at.y, z: Math.max(at.z, .35), vx: Math.cos(yaw) * flat, vy: Math.sin(yaw) * flat, vz: Math.sin(lift * Math.PI / 180) * speed,
     t: 0, touched: false, bounces: 0, event: null, from: { x: at.x, y: at.y },
@@ -992,6 +1002,7 @@ function strike(d) {
   d.tHit = d.hitAt;
   d.tReact = REACT;
   d.chase = planChase(G.ball, REACT);
+  for (const f of G.fielders) f.routeFor = null;  // they will walk back from wherever the chase takes them
   // off the middle it sparks; off the edge it scuffs up dust
   if (sw.grade < 2) burst(at, sw.grade ? 6 : 10, SPARK, sw.grade ? 2.2 : 3.4, 2.5, .3);
   else burst(at, 7, DUST, 1.1, 1.5, .4);
@@ -1301,14 +1312,88 @@ function setField(name, snap) {
   FIELDS[name].forEach((s, k) => {
     const f = G.fielders[k];
     f.name = s.name; f.home = { x: s.x, y: s.y };
-    if (snap) { f.x = s.x; f.y = s.y; f.yaw = facing(f, BATTER); f.pose = POSE_FIELDER; f.running = false; }
+    if (snap) { f.x = s.x; f.y = s.y; f.yaw = facing(f, BATTER); f.pose = POSE_FIELDER; f.running = false; f.via = null; f.routeFor = f.home; }
   });
 }
 const fieldSet = () => G.fielders.every(f => Math.hypot(f.x - f.home.x, f.y - f.home.y) < .05);
-// between balls the fielders jog back to their spots (a new over may bring new ones) and settle facing the bat
+/* no fielder may stand in front of what you play by: the batter and his bat's reach, the bricks, the swing cue and
+   the pitch from the landing ring down to the bat. These are sample points on them; a standing figure (about
+   FIG_HALF pixels either side of his feet and FIG_TALL units high) hides one if he is nearer the camera and his
+   screen box covers it */
+const FIG_HALF = 6, FIG_TALL = 2.4;
+const VIEW = (() => {
+  const pts = [];
+  for (let x = 1.4; x <= CONTACT_X + .4; x += .25) for (const dy of [-.9, 0, .9]) for (const z of [0, .6]) pts.push([x, PITCH_Y + dy, z]);
+  for (let z = 0; z <= 2.4; z += .3) for (const [dx, dy] of [[0, 0], [-.6, 0], [.6, 0], [0, -.9], [0, .9], [-.9, LEG * .6]]) pts.push([BATTER.x + dx, BATTER.y + dy, z]);
+  for (let z = 0; z <= STUMPS_Z; z += .2) pts.push([STUMPS_X, PITCH_Y, z]);
+  for (let dy = -1.6; dy <= 1.6; dy += .4) pts.push([CONTACT_X, PITCH_Y + dy, 0]);
+  return pts.map(([x, y, z]) => project(x, y, z));
+})();
+function hidesView(x, y) {
+  const feet = project(x, y, 0), top = project(x, y, FIG_TALL).sy - 2;
+  return VIEW.some(q => q.d < feet.d && Math.abs(q.sx - feet.sx) < FIG_HALF && q.sy > top && q.sy < feet.sy + 2);
+}
+// clear with room to spare, so a fielder can walk off his spot without stepping into the view
+const clearAround = (x, y) => !hidesView(x, y) && [0, 1, 2, 3, 4, 5, 6, 7].every(k => !hidesView(x + Math.cos(k * .785) * .4, y + Math.sin(k * .785) * .4));
+// move any placing that would hide the view to the nearest clear spot inside the lane (it matters for HAND = 'left')
+for (const list of Object.values(FIELDS)) for (const s of list) {
+  // keep every spot off the footpaths and inside the chalk (mirroring for HAND can push one out)
+  const B = FIELD_BOUNDS;
+  s.x = clamp(s.x, B.x0, B.x1); s.y = clamp(s.y, B.y0, B.y1);
+  if (clearAround(s.x, s.y)) continue;
+  let best = null;
+  for (let r = .2; r < 4 && !best; r += .2) for (let a = 0; a < 6.283; a += .2) {
+    const x = s.x + Math.cos(a) * r, y = s.y + Math.sin(a) * r;
+    if (x > B.x0 && x < B.x1 && y > B.y0 && y < B.y1 && clearAround(x, y)) { best = { x: +x.toFixed(2), y: +y.toFixed(2) }; break; }
+  }
+  if (best) Object.assign(s, best);
+}
+/* a walk from a to b keeps out of the view, if need be by way of turning points round the far end of the pitch or
+   behind the bricks. A walk that starts inside the view (after a chase) may cross it only to get out, never back in */
+const LANE_TURNS = [[0, -4.2], [0, 3.2], [-3, -.3], [3.4, -5.2], [3.4, 4.8], [10.8, -4.6], [10.6, 4.6], [-2.4, 4.6], [-2.4, -5.4],
+  [7.5, -5.6], [7.5, 5.4], [11, -.3]].flatMap(([x, y]) => [{ x, y }, { x, y: 2 * PITCH_Y - y }])   // both sides, for either HAND
+  .filter(p => p.y > FIELD_BOUNDS.y0 && p.y < FIELD_BOUNDS.y1 && !hidesView(p.x, p.y));
+function clearWalk(a, b, leaving) {
+  const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / .08);
+  let out = !leaving;
+  for (let i = 1; i <= n; i++) {
+    const h = hidesView(lerp(a.x, b.x, i / n), lerp(a.y, b.y, i / n));
+    if (h && out) return false;
+    if (!h) out = true;
+  }
+  return true;
+}
+// the shortest such walk: the first turning point to head for (null for straight there)
+function routeTo(f, home) {
+  const leaving = f.out || hidesView(f.x, f.y);
+  if (clearWalk(f, home, leaving)) return null;
+  // (a turning point he is already standing on is no use: that would stall him there)
+  const nodes = [...LANE_TURNS.filter(p => Math.hypot(p.x - f.x, p.y - f.y) > .3), home], dist = nodes.map(p => clearWalk(f, p, leaving) ? Math.hypot(p.x - f.x, p.y - f.y) : Infinity);
+  const first = nodes.map((p, i) => i), done = nodes.map(() => false);
+  for (;;) {
+    let i = -1;
+    for (let j = 0; j < nodes.length; j++) if (!done[j] && dist[j] < Infinity && (i < 0 || dist[j] < dist[i])) i = j;
+    if (i < 0 || nodes[i] === home) break;
+    done[i] = true;
+    for (let j = 0; j < nodes.length; j++) {
+      if (done[j]) continue;
+      const l = dist[i] + Math.hypot(nodes[j].x - nodes[i].x, nodes[j].y - nodes[i].y);
+      if (l < dist[j] && clearWalk(nodes[i], nodes[j])) { dist[j] = l; first[j] = first[i]; }
+    }
+  }
+  const end = nodes.length - 1;
+  if (dist[end] < Infinity) return nodes[first[end]];
+  // hemmed in at the edge of the view: plan as if getting out of it
+  return leaving ? null : routeTo({ x: f.x, y: f.y, out: true }, home);
+}
+// between balls the fielders jog back to their spots (a new over may bring new ones) and settle facing the bat,
+// going round rather than across the batter's view
 function walkFielders(dt) {
   for (const f of G.fielders) {
-    const dx = f.home.x - f.x, dy = f.home.y - f.y, gap = Math.hypot(dx, dy);
+    if (f.routeFor !== f.home) { f.routeFor = f.home; f.via = routeTo(f, f.home); }
+    const to = f.via || f.home;
+    const dx = to.x - f.x, dy = to.y - f.y, gap = Math.hypot(dx, dy);
+    if (f.via && gap < .1) { f.x = to.x; f.y = to.y; f.via = routeTo(f, f.home); continue; }
     if (gap > .05) {
       const go = Math.min(gap, JOG * dt);
       f.x += dx / gap * go; f.y += dy / gap * go; f.yaw = Math.atan2(dy, dx);
@@ -2015,7 +2100,7 @@ window.__cricket = {
   dirFromScreen, roseCenter,
   // the match: newMatch(target?) starts one now (teams unchanged); match(patch?) merges patch into G.match and
   // returns it, so a test can set up any score (e.g. { runs: 50, wkts: 2, balls: 29 }); replay() is the result tap
-  newMatch, replay, resultText,
+  newMatch, replay, resultText, hidesView, clearWalk,
   match(patch) { if (patch) Object.assign(G.match, patch); renderHud(); return G.match; },
   MATCH: { OVERS, WICKETS, TARGET, REPLAY_T },
 };
