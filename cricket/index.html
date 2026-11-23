@@ -113,7 +113,6 @@ const BOWLERS = {
 // where the ball is aimed at the stumps before any movement, relative to PITCH_Y
 const LINES = { stumps: [-.06, .06], off: [-.68 * LEG, -.55 * LEG].sort((a, b) => a - b), leg: [.55 * LEG, .68 * LEG].sort((a, b) => a - b) };
 const LINE_ODDS = ['stumps', 'stumps', 'off', 'off', 'leg'];
-const AGAINST_LINE = .85;                          // timing windows shrink by this when you hit against the line
 const GRADES = ['perfect', 'good', 'mistimed', 'miss'];
 // the 8 screen compass directions from the batter, and the same directions in world (x, y)
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -674,17 +673,17 @@ function gradeOf(dt, win) {
   return a <= win[0] ? 0 : a <= win[1] ? 1 : a <= win[2] ? 2 : 3;
 }
 /* one swing per ball, in direction dir (0-7, see DIRS), pressed at time t. The press is graded against the ball's
-   arrival at the bat. Hitting against the line narrows the window; a ball that moved off the pitch is graded one
-   step worse unless the timing was perfect. Returns the swing, or null when there is nothing to swing at. */
+   arrival at the bat; the timing alone decides whether the bat meets the ball. Hitting against the line costs one
+   grade, and so does a ball that moved off the pitch unless the timing was perfect, but neither (nor both) can
+   take a connecting swing past mistimed. Returns the swing, or null when there is nothing to swing at. */
 function swingAt(dir, t = G.time) {
   const d = G.del;
   if (G.phase === 'pick' || d.stage !== 'flight' || d.swing || t >= d.tStumps) return null;
   const B = BOWLERS[d.type], lineY = ballAt(d, d.tContact).y, line = lineOf(lineY);
   const against = line === 'off' && LEG_SIDE.includes(dir) || line === 'leg' && OFF_SIDE.includes(dir);
-  const win = B.window.map(w => w * (against ? AGAINST_LINE : 1));
   const dt = t - d.tContact, moved = d.move !== 'none';
-  let grade = gradeOf(dt, win);
-  if (moved && grade > 0 && grade < 3) grade++;
+  let grade = gradeOf(dt, B.window);
+  if (grade < 3 && (against || moved && grade > 0)) grade = Math.min(grade + 1, 2);
   const hitAt = Math.max(t, d.tContact);
   if (hitAt >= d.tStumps) grade = 3;
   d.swing = { dir, t, dt, grade, side: grade === 0 ? null : dt < 0 ? 'early' : 'late', against, moved, line };
@@ -1339,7 +1338,7 @@ const LANE = {
   CREASE_X, STUMPS_X, STUMPS_Z, BOWL_LINE_X, BRICK_X, BACKSTOP, BATTER, BOWLER, FIELDERS,
 };
 const FIELDING = { FIELDS, FIELD_NAMES, REACT, RUN_SPEED, GATHER_R, GATHER_Z, CATCH_R, CATCH_Z, RUN_DIST, SHOTS, LIVE_MAX, PROPS };
-const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, AGAINST_LINE, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
+const BOWLING = { BALL_R, GRAVITY, RELEASE_X, CONTACT_X, STUMPS_FACE, BOWLED_HALF, BOWLERS, LINES, GRADES, DIRS, DIR_WORLD, LEG_SIDE, OFF_SIDE, CHORD_T, DONE_T };
 const dirIndex = dir => typeof dir === 'number' ? dir : DIRS.indexOf(dir);
 // test controls. freeze() stops the frame loop advancing time so only step()/advance() move the game
 window.__cricket = {
