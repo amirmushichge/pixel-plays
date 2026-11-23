@@ -2611,13 +2611,15 @@ picker.addEventListener('click', e => {
   downOutside = false;
 });
 picker.addEventListener('close', () => {
-  // closed without a pick: carry on with the match, or after a result start the next one in the same shirts
-  if (G.phase === 'pick') { if (G.match && G.match.result) newMatch(); else G.phase = 'idle'; }
+  // closed without a pick: go back to where it was opened from. After the result is up that starts the next match in
+  // the same shirts; before then (the deciding ball still playing out) the match carries on and shows its result
+  if (G.phase === 'pick') { if (picker.dataset.from === 'over') newMatch(); else G.phase = 'idle'; }
   canvas.focus({ preventScroll: true });
 });
 function openPicker() {
   // mid-match, picking a team throws the score away, so say so, and offer the way back to the match as it was
   const mid = !!(G.match && !G.match.result && G.phase !== 'pick');
+  picker.dataset.from = G.phase;
   document.getElementById('picker-new').hidden = !mid;
   pickerBack.hidden = !mid;
   G.phase = 'pick';
