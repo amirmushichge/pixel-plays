@@ -1463,7 +1463,7 @@ function walkFielders(dt) {
    - tie: nobody celebrates. A shrug from the batter and the bowler, and a stand-off.
    With reduced motion nobody runs or jumps: each figure eases straight into its held pose. This is drawing only:
    it never touches the ball, the score or the clock, and the next match (or a tap on the result) resets it */
-const CELE = { run: 5.8, walk: 1.6, ring: .82, huddle: .64, air: .34, crouch: .16, jumpH: .3 };
+const CELE = { run: 5.8, walk: 1.6, ring: 1.15, huddle: 1.05, air: .34, crouch: .16, jumpH: .3 };
 const CELE_KIDS = 2.6;                             // how long the kids jump about after a win, before they stand cheering
 const planted = (x, y, toe) => ({ t0: -1e9, t1: 1e9, x, y, toe, lift: 0 });
 const lastPlant = list => list[list.length - 1];
@@ -1625,9 +1625,9 @@ function stepInto(A, x, y, yaw, t, w = .17) {
   return t + .05;
 }
 // jumps on the spot from t: a crouch, both feet off together, a soft landing. Returns when the last has settled
-function addJumps(A, t, n, top = CELE.jumpH) {
+function addJumps(A, t, n, top = CELE.jumpH, air = CELE.air) {
   for (let i = 0; i < n; i++) {
-    const off = t + CELE.crouch, on = off + CELE.air - .03 * i, h = top - .05 * i;
+    const off = t + CELE.crouch, on = off + air - .03 * i, h = top - .05 * i;
     for (const foot of ['L', 'R']) { const p = lastPlant(A.feet[foot]); stepTo(A.feet[foot], off, on, p.x, p.y, p.toe, h + .1); }
     A.jumps.push({ t, off, on, h });
     t = on + .2;
@@ -1757,14 +1757,13 @@ function cheer(A, yaw) {
     return setArms(b, a);
   };
 }
-// in the huddle: leaning in, an arm over each neighbour's shoulders
+// the held pose: a loose ring facing in, upright, fists up at a slightly different height each, so at 1x every
+// figure keeps his own head and arms instead of the five merging into one lump
 function huddle(A, hud) {
-  const H = hud.huddle, me = H[A.slot], left = [Math.sin(A.yaw), -Math.cos(A.yaw)], c = hud.c;
-  const a = H[(A.slot + 1) % 5], b = H[(A.slot + 4) % 5], isLeft = (a.x - me.x) * left[0] + (a.y - me.y) * left[1] > 0;
-  const onto = n => { const m = Math.hypot(c.x - n.x, c.y - n.y) || 1; return [lerp(me.x, n.x, .6) + (c.x - n.x) / m * .2, lerp(me.y, n.y, .6) + (c.y - n.y) / m * .2, 1.9 * FIG_SCALE]; };
+  const lift = [.86, .72, .8, .68, .76][A.slot];
   return (s, fL, fR) => {
-    const body = overFeet(fL, fR, { yaw: A.yaw, z: 1.17, lean: .36, bow: .2 }), f = bodyFrame(body);
-    return setArms(body, { L: onto(isLeft ? a : b), R: onto(isLeft ? b : a), pL: vAdd(vMul(f.right, -1), [0, 0, .3]), pR: vAdd(f.right, [0, 0, .3]) });
+    const body = overFeet(fL, fR, { yaw: A.yaw, z: 1.21, lean: .08, bow: -.08 }), f = bodyFrame(body);
+    return setArms(body, armsFor('up', body, f, lift));
   };
 }
 
@@ -1780,11 +1779,11 @@ function batterCele(C) {
     if (!STILL) {
       stepTo(A.feet.R, .22, .56, FL.x + cr[0] * 2 * w, FL.y + cr[1] * 2 * w, yc, .16);
       stepTo(A.feet.L, .42, .62, FL.x, FL.y, yc, .02);
-      addJumps(A, .82, 2, .42);
+      addJumps(A, .82, 2, .85, .5);   // high and slow enough to read at 1x: his shadow stays put as he goes up
     }
     phase(A, 0, .45, (s, fL, fR) => {
       const turn = STILL ? .5 : ease(clamp((s - .15) / .5, 0, 1)), yaw = angMix(yaw0, yc, turn);
-      const pump = STILL ? 0 : keyed(s, [[2.2, 0], [2.36, 1], [2.52, .2], [2.68, 1], [2.92, 0]]), air = airOf(A, s);
+      const pump = STILL ? 0 : keyed(s, [[2.55, 0], [2.71, 1], [2.87, .2], [3.03, 1], [3.27, 0]]), air = airOf(A, s);
       const body = overFeet(fL, fR, { yaw, z: 1.22 + jumpZ(A, s) - .04 * pump, lean: .06 + .12 * pump, bow: -.1 - .1 * air + .15 * pump, hips: STILL ? -.3 : 0 });
       const f = bodyFrame(body);
       // the bat up high in the bottom hand, blade to the sky; the other fist up, pumped down twice
