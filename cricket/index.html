@@ -134,7 +134,7 @@ const TEAMS = [
 for (const t of TEAMS) t.legs = t.body.map(v => Math.round(v * .78)); // trousers: the body colour, a shade darker
 const BLADE = [238, 180, 84], GRIP = [168, 38, 34];
 
-const BATTER = { x: 7.55, y: .15 };
+const BATTER = { x: 7.55, y: -.55 }; // on the leg side of the stumps line, so the ball passes in front of his pads
 const BOWLER = { x: -6.4, y: -.55 };
 // fielders sit between the eight screen directions from the batter, so every shot direction is open floor
 const FIELDERS = [
