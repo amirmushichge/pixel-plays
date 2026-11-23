@@ -2417,9 +2417,27 @@ const inputBlocked = () => G.phase === 'pick' || !!document.querySelector('dialo
 /* the game time of an input event. G.time is the time of the last frame; the press happened e.timeStamp - lastFrame
    later on the same clock, so a press is graded at the moment it was made, not at the frame that handles it */
 const pressTime = e => G.frozen ? G.time : G.time + clamp((e.timeStamp - last) / 1000, 0, .04);
+/* one tap acts on one layer. A dialog opened by a press (the result tap opens the picker on its way down) ignores
+   pointer clicks until that press is lifted and LAYER_GUARD ms have passed, so the same tap cannot pick the team
+   under the finger; and the game ignores presses for LAYER_GUARD ms after any dialog closes, so the tap that closed
+   it cannot swing. Keyboard clicks (detail 0) are never held back */
+const LAYER_GUARD = 300;
+let openPress = null, guardUntil = 0;
+const guardFrom = () => { guardUntil = performance.now() + LAYER_GUARD; };
+addEventListener('pointerup', e => { if (openPress === e.pointerId) { openPress = null; guardFrom(); } }, true);
+addEventListener('pointercancel', e => { if (openPress === e.pointerId) { openPress = null; guardFrom(); } }, true);
+addEventListener('click', e => {
+  if (e.detail && e.target.closest('dialog[open]') && (openPress != null || performance.now() < guardUntil)) {
+    e.preventDefault(); e.stopPropagation();
+  }
+}, true);
+addEventListener('close', guardFrom, true);
 canvas.addEventListener('pointerdown', e => {
   canvas.focus({ preventScroll: true });
-  if (inputBlocked() || replay() || G.phase === 'over') return;
+  if (performance.now() < guardUntil) return;
+  if (inputBlocked()) return;
+  if (replay()) { openPress = e.pointerId; guardFrom(); return; }
+  if (G.phase === 'over') return;
   const r = canvas.getBoundingClientRect(), c = roseCenter();
   const dx = (e.clientX - r.left) * W / r.width - c.sx, dy = (e.clientY - r.top) * H / r.height - c.sy;
   if (Math.hypot(dx, dy) < 3) return;
