@@ -113,6 +113,7 @@ const DIR_WORLD = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], 
 const LEG_SIDE = [0, 1, 2], OFF_SIDE = [4, 5, 6];  // N, NE, E go to leg (-y); S, SW, W go to the off side (+y)
 const CHORD_T = .06;                               // two arrow keys pressed this close together make a diagonal
 const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
+const HOLD_T = .9;                                 // of that, how long everyone holds still (or celebrates) first
 const ROSE_IN = 15, ROSE_OUT = 23, FLASH_T = .45;  // the direction guide around the batter, in canvas pixels
 
 /* ---------- the hit ----------
@@ -491,10 +492,8 @@ function bake() {
   drum(BACKSTOP.x, BACKSTOP.y, BACKSTOP.r, BACKSTOP.h, [150, 70, 48], [.25, .75]);
   box(BRICK_X - BRICK.w / 2, PITCH_Y - BRICK.l / 2, 0, BRICK_X + BRICK.w / 2, PITCH_Y + BRICK.l / 2, BRICK.h, BRICKWORK, 40);
   castShadow(BRICK_X, PITCH_Y, .08, .3);
-  // two kids watching from the blue door's step
+  // the two kids watching from the blue door's step are drawn per frame (they cheer boundaries), see drawKids()
   pendingShadows.length = 0;
-  figure(-4.4, WALL_Y + .35, Math.atan2(BATTER.y - WALL_Y, BATTER.x + 4.4), { z: .26, scale: .66, crouch: .9, lean: .3, stance: .1, armR: .9, armL: .9 }, { shirt: [232, 200, 72], stripe: [232, 200, 72], legs: [60, 64, 92], skin: SKIN[3], hair: HAIR[1] }, dynamicAdd);
-  figure(-3.5, WALL_Y + .38, Math.atan2(BATTER.y - WALL_Y, BATTER.x + 3.5), { z: .26, scale: .62, stance: .06, armR: .15, armL: .15 }, { shirt: [214, 96, 132], stripe: [214, 96, 132], legs: [88, 60, 70], skin: SKIN[4], hair: HAIR[0] }, dynamicAdd);
   flushShadows();
   bakeOcclusion();
   staticShadow.set(shadowMask);
@@ -511,6 +510,14 @@ const POSE_BOWLER = { stance: .12, armR: .2, armL: .1 };
 const POSE_FIELDER = { crouch: .2, lean: .18, stance: .18, armR: .45, armL: .45 };
 const POSE_HOLD = { stance: .14, lean: .05, armR: -1.2, armL: .2 };   // ball in hand, held up to show it
 const POSE_CATCH = { stance: .1, lean: -.05, armR: -2.9, armL: -2.6 }; // caught: both hands up over the head
+const POSE_CHEER = { stance: .14, lean: -.04, armR: -2.7, armL: -2.9 }; // a wicket: the fielding side's arms go up
+// the kids on the blue door's step: sitting and standing, and the poses they jump with when a boundary comes
+const KIDS = [
+  { x: -4.4, y: WALL_Y + .35, pose: { z: .26, scale: .66, crouch: .9, lean: .3, stance: .1, armR: .9, armL: .9 }, cheer: { z: .26, scale: .66, stance: .12, armR: -2.8, armL: -2.6 }, palette: { shirt: [232, 200, 72], stripe: [232, 200, 72], legs: [60, 64, 92], skin: SKIN[3], hair: HAIR[1] } },
+  { x: -3.5, y: WALL_Y + .38, pose: { z: .26, scale: .62, stance: .06, armR: .15, armL: .15 }, cheer: { z: .26, scale: .62, stance: .1, armR: -2.6, armL: -2.9 }, palette: { shirt: [214, 96, 132], stripe: [214, 96, 132], legs: [88, 60, 70], skin: SKIN[4], hair: HAIR[0] } },
+];
+for (const k of KIDS) k.yaw = Math.atan2(BATTER.y - k.y, BATTER.x - k.x);
+const CHEER_T = 1.2;                               // how long a reaction to a wicket or boundary lasts
 // a figure palette for one team: a solid shirt, and trousers a shade darker so the figure keeps its waist
 const kitPalette = team => ({ shirt: team.body, stripe: team.body, legs: team.legs });
 const person = (spot, k, yaw, pose) => ({ x: spot.x, y: spot.y, yaw, pose, palette: { skin: SKIN[k % SKIN.length], hair: HAIR[k % HAIR.length] } });
@@ -529,6 +536,7 @@ const G = {
   stumps: { down: false, t: 0, seed: 0 },
   chord: null, auto: true, frozen: false, force: {},
   timeouts: 0,  // how often a live ball hit the LIVE_MAX backstop
+  react: null, fx: [],  // the latest wicket or boundary reaction { kind, t0 }, and contact sparks / dust in the air
 };
 G.batter.swing = null;
 // dress the batter in your kit and the fielding side in the rival's (drawn from the other eight if not given)
@@ -686,6 +694,9 @@ function strike(d) {
   d.tHit = d.hitAt;
   d.tReact = REACT;
   d.chase = planChase(G.ball, REACT);
+  // off the middle it sparks; off the edge it scuffs up dust
+  if (sw.grade < 2) burst(at, sw.grade ? 6 : 10, SPARK, sw.grade ? 2.2 : 3.4, 2.5, .3);
+  else burst(at, 7, DUST, 1.1, 1.5, .4);
 }
 // where the loose ball is resting or bouncing: the paving, or the top of a prop it is above
 function floorUnder(b) {
@@ -817,6 +828,7 @@ function stepLive(d) {
     stepBall(b, PHYS_DT);
     stepFielders(d, PHYS_DT);
     const e = b.event;
+    if (e && e.how === 'wall') burst(e.at, 8, DUST, 1.4, 1.2, .45);
     if (e) {
       // clean over a house front: lost in the neighbour's, and the batter is out
       if (e.how === 'over') return finish(d, 'hit', { runs: 0, out: true, how: 'over the wall' });
@@ -872,6 +884,7 @@ function finish(d, result, outcome) {
   const o = outcome || (result === 'bowled' ? { runs: 0, out: true, how: 'bowled' } : { runs: 0, out: false, how: 'beaten' });
   Object.assign(G.last, o, { field: G.field });
   G.history.push(G.last);
+  G.react = o.out ? { kind: 'wicket', t0: G.time } : o.runs >= 4 ? { kind: 'boundary', t0: G.time } : null;
   setStatus(OUTCOME_TEXT(o));
 }
 // a loose ball: gravity, bounces off the paving, and the drum stops it dead
@@ -906,7 +919,7 @@ function commitChord() {
 function resetDelivery() {
   G.del = { stage: 'wait', timer: .6 };
   G.ball = null; G.chord = null; G.batter.swing = null;
-  G.stumps.down = false;
+  G.stumps.down = false; G.react = null; G.fx = [];
   G.balls = 0; G.over = 0; G.ballInOver = 0;
   G.overType = rng() < .5 ? 'fast' : 'spin';
   // a new order of field placings, never the same one two overs running
@@ -942,6 +955,34 @@ function walkFielders(dt) {
   }
 }
 
+/* ---------- feedback ----------
+   Sparks off the bat for a timed shot, a puff of dust for a mistimed one and where the ball thumps a house front.
+   Each bit is a single pixel thrown out from the spot under gravity, gone in a fraction of a second. */
+const SPARK = [rgb(255, 240, 170), rgb(255, 214, 10), rgb(255, 255, 255)];
+const DUST = [rgb(214, 200, 176), rgb(190, 176, 152), rgb(232, 222, 204)];
+function burst(at, n, colors, speed, up, life) {
+  for (let i = 0; i < n; i++) {
+    const a = i / n * 6.283 + hash(i, G.balls) * .8, v = speed * (.5 + hash(G.balls, i) * .7);
+    G.fx.push({ x: at.x, y: at.y, z: at.z, vx: Math.cos(a) * v, vy: Math.sin(a) * v, vz: up * (.4 + hash(i + 7, G.balls)), t: 0, life: life * (.6 + hash(i, 3) * .5), c: colors[i % colors.length] });
+  }
+}
+function stepFx(dt) {
+  for (const p of G.fx) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z = Math.max(0, p.z + p.vz * dt); p.vz -= GRAVITY * .5 * dt; }
+  G.fx = G.fx.filter(p => p.t < p.life);
+}
+function drawFx() {
+  for (const p of G.fx) { const q = project(p.x, p.y, p.z); drawDots([[q.sx, q.sy]], p.c); }
+}
+// a little jump, out of step by k
+const hop = (age, k) => age < CHEER_T ? .16 * Math.abs(Math.sin(age * 11 + k * 1.3)) * (1 - age / CHEER_T) : 0;
+function drawKids() {
+  const r = G.react, cheer = r && r.kind === 'boundary' && G.time - r.t0 < CHEER_T;
+  KIDS.forEach((k, i) => {
+    const pose = cheer ? { ...k.cheer, z: k.cheer.z + hop(G.time - r.t0, i) * 1.6 } : k.pose;
+    figure(k.x, k.y, k.yaw, pose, k.palette, dynamicAdd);
+  });
+}
+
 /* ---------- update ---------- */
 function update(dt) {
   G.time += dt;
@@ -968,18 +1009,23 @@ function update(dt) {
     d.timer -= dt;
   }
   // the fielders: set while the ball comes down, chasing while it is live, then back to their spots
-  if (d.stage === 'live' || d.stage === 'done' && d.timer > DONE_T - .7) {
-    for (const f of team()) {
-      if (f === G.bowler && G.time - d.t0 < d.runT + .4) continue;
-      f.pose = f.running && d.stage === 'live' ? { ...walkPose(14, .34), ...RUN_POSE } : f === G.bowler ? POSE_BOWLER : G.ball && G.ball.held === f ? (G.ball.caught ? POSE_CATCH : POSE_HOLD) : POSE_FIELDER;
-    }
+  if (d.stage === 'live' || d.stage === 'done' && d.timer > DONE_T - HOLD_T) {
+    const cheer = d.stage === 'done' && G.react && G.react.kind === 'wicket';
+    team().forEach((f, k) => {
+      if (f === G.bowler && G.time - d.t0 < d.runT + .4) return;
+      const held = G.ball && G.ball.held === f;
+      f.pose = f.running && d.stage === 'live' ? { ...walkPose(14, .34), ...RUN_POSE } : held ? (G.ball.caught ? POSE_CATCH : POSE_HOLD) : cheer ? POSE_CHEER : f === G.bowler ? POSE_BOWLER : POSE_FIELDER;
+      // a wicket: everyone jumps, a little out of step
+      if (cheer) f.pose = { ...f.pose, z: hop(G.time - G.react.t0, k) };
+    });
   } else if (d.stage === 'done' || d.stage === 'wait') walkFielders(dt);
+  stepFx(dt);
   // the bowler: running in and following through, then walking back to his mark
   const bw = G.bowler, s = d.t0 == null ? Infinity : G.time - d.t0;
   if (d.stage !== 'wait' && s < d.runT + .4) {
     const at = bowlerAt(d, s);
     bw.x = at.x; bw.yaw = at.yaw; bw.pose = at.pose;
-  } else if (d.stage === 'done' && d.timer <= DONE_T - .7 || d.stage === 'wait') {
+  } else if (d.stage === 'done' && d.timer <= DONE_T - HOLD_T || d.stage === 'wait') {
     const mark = { x: BOWLERS[nextType()].mark, y: BOWLER.y }, gx = mark.x - bw.x, gy = mark.y - bw.y, gap = Math.hypot(gx, gy);
     if (gap > .05) {
       const go = Math.min(gap, 3.6 * dt);
@@ -1134,6 +1180,7 @@ function draw() {
     const h = drawFigure(f, f.pose);
     if (held === f) Object.assign(G.ball, { x: h[0], y: h[1], z: h[2] });
   }
+  drawKids();
   drawStumps();
   drawBatter();
   if (d.stage === 'runup') drawBall({ x: hand[0], y: hand[1], z: hand[2] });
@@ -1144,6 +1191,7 @@ function draw() {
   flushShadows();
   applyShadows(bakedZ);
   shadeEdges();
+  drawFx();
   if (G.phase !== 'pick') {
     drawRose();
     if ((d.stage === 'runup' || d.stage === 'flight') && !d.bounced) drawMarker(d);
