@@ -19,6 +19,11 @@
   .team span { color: var(--muted); font-variant-numeric: tabular-nums; }
   #you { color: var(--a); } #rival { color: var(--b); }
   #status { color: var(--muted); }
+  #need, #over-row { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #over-row:not([hidden]) { display: flex; }
+  /* this over, one mark per ball: · a dot ball, a number of runs, W a wicket */
+  #this-over { display: flex; gap: .7ch; margin-left: 1ch; }
+  #this-over .w { color: var(--ink); font-weight: 600; }
   button { pointer-events: auto; font: inherit; color: var(--muted); background: none; border: 0; padding: 10px; margin: -10px; cursor: pointer; }
   button:hover, button:focus-visible { color: var(--ink); }
   /* team picker: same chrome as the shell's rules popup (ink on white, 1px border, monospace) */
@@ -39,8 +44,10 @@
 <body>
 <div id="stage"><canvas id="c" tabindex="0" aria-label="Gully cricket in a lane between two houses. You bat at the near end; the bowler runs in from the far end."></canvas></div>
 <div id="scores">
-  <div class="team" id="you"><b id="runs">0/0</b><span id="overs">0.0 ov</span></div>
+  <div class="team" id="you"><b id="runs" aria-label="runs for wickets"></b><span id="overs"></span></div>
   <div class="team" id="rival"><span class="name" id="match"></span><span id="target"></span></div>
+  <div id="need"></div>
+  <div id="over-row" hidden><span>this over</span><span id="this-over"></span></div>
 </div>
 <div class="hud" id="bottom">
   <div id="status" role="status" aria-live="polite"></div>
@@ -577,6 +584,9 @@ const nodes = {
   target: document.getElementById('target'),
   status: document.getElementById('status'),
   match: document.getElementById('match'),
+  need: document.getElementById('need'),
+  thisOver: document.getElementById('this-over'),
+  overRow: document.getElementById('over-row'),
 };
 function setStatus(text) {
   if (text === G.status) return;
@@ -1223,7 +1233,24 @@ function replay() {
   openPicker();
   return true;
 }
-function renderHud() {}
+// the scoreboard: runs/wickets, overs as 2.4, this over's balls, the target, and what is still needed
+const oversText = balls => Math.floor(balls / 6) + '.' + balls % 6;
+function renderHud() {
+  const m = G.match;
+  if (!m) return;
+  nodes.runs.textContent = m.runs + '/' + m.wkts;
+  nodes.overs.textContent = oversText(m.balls) + ' ov';
+  nodes.thisOver.replaceChildren(...m.thisOver.map(c => {
+    const s = document.createElement('span');
+    s.textContent = c;
+    if (c === 'W') s.className = 'w';
+    return s;
+  }));
+  nodes.overRow.hidden = !m.thisOver.length;
+  nodes.target.textContent = 'target ' + m.target;
+  const need = m.target - m.runs, left = OVERS * 6 - m.balls;
+  nodes.need.textContent = m.result ? '' : 'need ' + need + ' from ' + plural(left, 'ball');
+}
 // a loose ball: gravity, bounces off the paving, and the drum stops it dead
 function stepLoose(b, dt) {
   b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt; b.vz -= GRAVITY * dt;
