@@ -60,8 +60,9 @@ function unproject(sx, sy) {
 }
 
 let capture = null; // when set, sphere() records pixels instead of drawing them
-function sphere(x, y, z, r, c, mode) {
-  const ramp = rampOf(c);
+// heightColor (optional) recolours each pixel by the world height of the surface point under it
+function sphere(x, y, z, r, c, mode, heightColor) {
+  let ramp = rampOf(c);
   const p = project(x, y, z), rp = Math.max(r * S, .75);
   const y0 = Math.max(0, Math.floor(p.sy - rp)), y1 = Math.min(H - 1, Math.ceil(p.sy + rp));
   const x0 = Math.max(0, Math.floor(p.sx - rp)), x1 = Math.min(W - 1, Math.ceil(p.sx + rp));
@@ -70,6 +71,7 @@ function sphere(x, y, z, r, c, mode) {
     if (nn > 1) continue;
     const nz = Math.sqrt(1 - nn), d = p.d + r * nz, i = iy * W + ix;
     if (d <= zb[i]) continue;
+    if (heightColor) ramp = rampOf(heightColor(z + r * (nz * SIN - dy * COS)));
     let l = clamp(-.55 * dx - .6 * dy + .58 * nz, 0, 1);
     if (mode === 'rough') l += (hash(ix, iy) - .5) * .55;
     if (dy > .35) l = Math.max(l, .12 + dy * .24); // warm light bouncing off the ground
@@ -89,7 +91,7 @@ function capsule(a, b, r0, r1, colorOf, mode) {
   const n = Math.max(1, Math.ceil(len / (Math.min(r0, r1) * .45)));
   for (let k = 0; k <= n; k++) {
     const t = k / n, z = lerp(a[2], b[2], t);
-    sphere(lerp(a[0], b[0], t), lerp(a[1], b[1], t), z, lerp(r0, r1, t), colorOf(z), mode);
+    sphere(lerp(a[0], b[0], t), lerp(a[1], b[1], t), z, lerp(r0, r1, t), colorOf(z), mode, colorOf.byHeight);
   }
 }
 function box(x0, y0, z0, x1, y1, z1, c, seed = 0) {
@@ -250,9 +252,10 @@ function figure(px, py, yaw, pose, palette, addBone) {
   const P = (a, b, c) => [px + (fx * a + sx * b) * k, py + (fy * a + sy * b) * k, c * k + base];
   const add = (a, b, r0, r1, f) => addBone(a, b, r0 * k, r1 * k, f);
   const t = palette;
-  // optional: palette.shirtAt(h) colours the shirt by height h above the feet in unscaled figure units
-  // (hips ~1.28, shoulders ~2.2); it must return the same array objects each call so their ramps are cached
-  const shirt = t.shirtAt ? z => t.shirtAt((z - base) / k)
+  // optional: palette.shirtAt(h) colours the shirt pixel by pixel by height h above the feet, in unscaled
+  // figure units (hips ~1.28, shoulders ~2.2), so stripes stay level whatever the sphere sampling.
+  // It must return the same array objects each call so their ramps are cached
+  const shirt = t.shirtAt ? byHeight(h => t.shirtAt((h - base) / k))
     : z => (Math.floor(z * 3.2) % 2 ? t.shirt : t.stripe); // about 3px bands: thinner ones read as noise
   const legs = () => t.legs, skin = () => t.skin;
   const crouch = pose.crouch || 0, lean = pose.lean || 0;
@@ -283,6 +286,8 @@ function figure(px, py, yaw, pose, palette, addBone) {
   add(shL, elbowL, .12, .1, shirt); add(elbowL, handL, .09, .08, skin);
   return handR;
 }
+// a bone colour function whose spheres are recoloured per pixel by world height (see sphere's heightColor)
+function byHeight(colorAtZ) { const f = z => colorAtZ(z); f.byHeight = colorAtZ; return f; }
 function sphere2(add, c, r, color) { add(c, c, r, r, () => color); }
 const dynamicAdd = (a, b, r0, r1, f) => { capsule(a, b, r0, r1, f, 'solid'); pendingShadows.push(a, r0, b, r1); };
 const pendingShadows = [];
