@@ -209,6 +209,9 @@ const REACT = .3, RUN_SPEED = 4.6, JOG = 4.2, GATHER_R = .6, GATHER_Z = 1.5;
 // a ball that has not touched the ground, a wall or a prop is caught if it comes within CATCH_R of a fielder below
 // CATCH_Z (hands above the head). Anything that has touched something first is only fielded: clean catches only
 const CATCH_R = .7, CATCH_Z = 2.4;
+// a ball still flying faster than CATCH_HOT when it reaches a fielder's hands is a hard chance: held only 70% of the
+// time (DROP). A drop is fielded where it fell, so a hit straight at a deep fielder is a gamble and not a sure out
+const CATCH_HOT = 10, DROP = .3;
 /* the bowler is the fifth fielder, but he finishes his follow-through off balance right on the straight hit's line,
    so he only takes a return catch that comes to him, close and below the waist; anything higher or wider goes past */
 const BOWLER_CATCH_R = .4, BOWLER_CATCH_Z = 1.1;
@@ -1148,10 +1151,11 @@ function stepLive(d) {
     }
     const f = gatherer(b);
     if (f) {
-      const caught = canCatch(b), dist = Math.hypot(b.x - b.from.x, b.y - b.from.y);
+      const dist = Math.hypot(b.x - b.from.x, b.y - b.from.y);
+      const dropped = canCatch(b) && Math.hypot(b.vx, b.vy, b.vz) > CATCH_HOT && rng() < DROP, caught = canCatch(b) && !dropped;
       b.held = f; b.vx = b.vy = b.vz = 0; b.caught = caught;
       if (caught) return finish(d, 'hit', { runs: 0, out: true, how: 'caught', by: f.name || 'bowler', dist });
-      return finish(d, 'hit', { runs: runsFor(dist), out: false, how: 'fielded', by: f.name || 'bowler', dist });
+      return finish(d, 'hit', { runs: runsFor(dist), out: false, how: 'fielded', by: f.name || 'bowler', dist, dropped });
     }
     if (b.gone) return finish(d, 'hit', { runs: 0, out: false, how: 'lost' });
     // the planned gather did not happen: plan again from here, with no reaction delay
@@ -1181,7 +1185,7 @@ function passStumps(d) {
 /* settle the ball. outcome = { runs, out, how } where how is 'wall' or 'chalk' (4 or 6), 'fielded' (0 to 3, with
    by and dist), 'caught' (out, with by), 'over the wall' (out), 'bowled' (out), or 'beaten' (missed or left, into
    the drum, no run) */
-const OUTCOME_TEXT = o => o.how === 'bowled' || o.how === 'caught' ? o.how : o.how === 'over the wall' ? 'over the wall, out' : o.runs === 4 ? 'four' : o.runs === 6 ? 'six' : o.runs ? o.runs + (o.runs > 1 ? ' runs' : ' run') : 'no run';
+const OUTCOME_TEXT = o => o.dropped ? 'dropped! ' + (o.runs ? o.runs + (o.runs > 1 ? ' runs' : ' run') : 'no run') : o.how === 'bowled' || o.how === 'caught' ? o.how : o.how === 'over the wall' ? 'over the wall, out' : o.runs === 4 ? 'four' : o.runs === 6 ? 'six' : o.runs ? o.runs + (o.runs > 1 ? ' runs' : ' run') : 'no run';
 function finish(d, result, outcome) {
   d.stage = 'done';
   d.timer = DONE_T;
