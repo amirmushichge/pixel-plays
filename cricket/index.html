@@ -75,6 +75,7 @@ PixelPlays.mount({
   rules: [
     'Chase the target in 5 overs of 6 balls. Lose 3 wickets and you are all out. The bowler swaps between fast and spin each over.',
     'Swing when the two ticks on the ball\'s path close into a bar. Right on it and the ball goes up in the air, usually for six, but it can be caught or sail over a wall and out. A little off and it is hit hard along the ground. Further off and it pops up softly for little or nothing. A ball that moves off the pitch, or one hit against its line, is harder to time.',
+    'The wedge on the landing ring shows which way the ball will move, and how far. Hit it with the movement, the way the wedge points, to be safe. Hit across it and the ball squirts off your line and slows, or takes an edge that can be caught; the bigger the wedge, the worse. Good timing helps but does not save you.',
     'Aim with the arrow keys (two for a diagonal), Q W E A D Z X C or the mouse; the dotted line from the batter shows where. Press Space or click to swing. With no key held you hit straight past the bowler. On a touch screen, tap around the batter to aim and swing at once.',
     'House rules: the house wall is 4 if the ball bounces first and 6 on the full. Past the chalk line is the same. Clean over the wall is out.',
     'You are also out if the ball knocks over the bricks, or a fielder catches it before it touches the ground or a wall. Hard-hit catches are sometimes dropped. A ball a fielder stops is worth 0 to 3 runs, more the further it went, so find the gaps.',
@@ -163,6 +164,20 @@ const SHOTS = [
 /* the glance behind (SE): played fine, past the bricks and the drum on the side away from the camera, so it is a
    real shot (four, or runs if fine cuts it off) and not a thud into the bricks. It is played softer and kept low */
 const GLANCE = 3, GLANCE_PACE = .72, GLANCE_LIFT = 12;
+/* hitting across the movement. A ball that moved off the pitch is safest hit with it: towards the side it is moving
+   to, the way the landing ring's wedge points. Hit against it and the bat meets it at an angle. How much depends on
+   crossOf: how far the ball moved (its amount) times how square across the movement the shot goes (1 for straight
+   across, .71 for a diagonal, 0 along the lane or with the movement), softened by the timing (timing[grade]: a
+   perfect hit takes it best, but not all of it; this is the timing alone, before the grade's other penalties). With that much cross, the hit either squirts off its line towards
+   the movement by up to push degrees and loses up to pace of its speed, or (more often the bigger the cross, from
+   edgeFrom up, at most edgeMax of the time) takes a thin edge: a slow ball off at an angle on the movement side,
+   fine to square (atan2 of fine), that loops up where it can be caught (loops of the time) or skids away low */
+const CROSS = { timing: [.6, .85, 1], push: 40, pace: .35, edgeFrom: .3, edgeRate: 1.6, edgeMax: .75, edgeSpeed: [5, 9], fine: [.25, 1.1], loops: .5, loop: [16, 40], low: [-8, 4] };
+function crossOf(d, dir) {
+  if (d.move === 'none' || !d.amount) return 0;
+  const w = DIR_WORLD[dir], across = -w[1] / Math.hypot(w[0], w[1]) * Math.sign(d.end - d.aim);
+  return Math.max(0, across) * d.amount;
+}
 const PHYS_DT = 1 / 240;                           // the loose ball is stepped at a fixed rate, so a replay is exact
 const BOUNCE = .45, SKID = .8, BOUNCE_MIN = 1.2;   // paving: vertical restitution, speed kept along the ground per bounce
 const ROLL = 3.2, VERGE_ROLL = 14;                 // rolling slow-down on the paving, and in the weeds past the chalk
@@ -1023,10 +1038,11 @@ function swingAt(dir, t = G.time) {
   const against = line === 'off' && LEG_SIDE.includes(dir) || line === 'leg' && OFF_SIDE.includes(dir);
   const dt = t - d.tContact, moved = d.move !== 'none';
   let grade = gradeOf(dt, B.window);
+  const timed = grade;
   if (grade < 3 && (against || moved && grade > 0)) grade = Math.min(grade + 1, 2);
   const hitAt = Math.max(t, d.tContact);
   if (hitAt >= d.tStumps) grade = 3;
-  d.swing = { dir, t, dt, grade, side: grade === 0 ? null : dt < 0 ? 'early' : 'late', against, moved, line };
+  d.swing = { dir, t, dt, grade, timed, side: grade === 0 ? null : dt < 0 ? 'early' : 'late', against, moved, line };
   if (grade < 3) d.hitAt = hitAt;
   // the batter's swing (drawing only): it meets the ball where it really is at hitAt, or swings through its line
   G.batter.swing = null;
@@ -1052,6 +1068,23 @@ function strike(d) {
     if (f.speed == null) speed *= GLANCE_PACE;
     flat = Math.cos(lift * Math.PI / 180) * speed;
   }
+  // played across a ball that moved: pushed towards the movement and slower, or a thin edge (see CROSS)
+  const cross = f.cross != null ? f.cross : crossOf(d, sw.dir) * CROSS.timing[Math.min(sw.timed, 2)], side = Math.sign(d.end - d.aim);
+  let edge = false;
+  if (cross > 0) {
+    edge = f.edge != null ? f.edge : rng() < clamp((cross - CROSS.edgeFrom) * CROSS.edgeRate, 0, CROSS.edgeMax);
+    if (edge) {
+      yaw = Math.atan2(side, range(CROSS.fine));
+      speed = range(CROSS.edgeSpeed);
+      lift = rng() < CROSS.loops ? range(CROSS.loop) : range(CROSS.low);
+    } else {
+      const turn = Math.atan2(Math.sin(Math.atan2(side, 0) - yaw), Math.cos(Math.atan2(side, 0) - yaw));
+      yaw += Math.sign(turn) * Math.min(Math.abs(turn), cross * CROSS.push * Math.PI / 180);
+      speed *= 1 - CROSS.pace * cross;
+    }
+    flat = Math.cos(lift * Math.PI / 180) * speed;
+  }
+  d.cross = cross; d.edge = edge;
   G.ball = {
     x: at.x, y: at.y, z: Math.max(at.z, .35), vx: Math.cos(yaw) * flat, vy: Math.sin(yaw) * flat, vz: Math.sin(lift * Math.PI / 180) * speed,
     t: 0, touched: false, bounces: 0, event: null, from: { x: at.x, y: at.y },
@@ -1064,7 +1097,7 @@ function strike(d) {
   sfx('hit', sw.grade);
   for (const f of G.fielders) f.routeFor = null;  // they will walk back from wherever the chase takes them
   // off the middle it sparks; off the edge it scuffs up dust
-  if (sw.grade < 2) burst(at, sw.grade ? 6 : 10, SPARK, sw.grade ? 2.2 : 3.4, 2.5, .3);
+  if (sw.grade < 2 && !edge) burst(at, sw.grade ? 6 : 10, SPARK, sw.grade ? 2.2 : 3.4, 2.5, .3);
   else burst(at, 7, DUST, 1.1, 1.5, .4);
 }
 // where the loose ball is resting or bouncing: the paving, or the top of a prop it is above
@@ -1253,13 +1286,13 @@ function finish(d, result, outcome) {
     dt: sw ? sw.dt : null, against: sw ? sw.against : false, result,
   };
   const b = G.ball;
-  if (result === 'hit') Object.assign(G.last, { shot: d.shot, touched: b.event ? b.event.touched : b.touched, bounces: b.bounces, at: { x: b.x, y: b.y, z: b.z }, t: b.t });
+  if (result === 'hit') Object.assign(G.last, { shot: d.shot, cross: d.cross, edge: d.edge, touched: b.event ? b.event.touched : b.touched, bounces: b.bounces, at: { x: b.x, y: b.y, z: b.z }, t: b.t });
   const o = outcome || (result === 'bowled' ? { runs: 0, out: true, how: 'bowled' } : { runs: 0, out: false, how: 'beaten' });
   Object.assign(G.last, o, { field: G.field });
   G.history.push(G.last);
   G.react = o.out ? { kind: 'wicket', t0: G.time } : o.runs >= 4 ? { kind: 'boundary', t0: G.time } : null;
   if (G.react) sfx(o.out ? 'groan' : 'cheer');
-  setStatus(OUTCOME_TEXT(o));
+  setStatus((result === 'hit' && d.edge ? 'edged! ' : '') + OUTCOME_TEXT(o));
   scoreBall(o);
   // the ball that decides the match: the winners start celebrating now, as the result goes up
   if (G.match && G.match.result && !G.cele) startCelebration();
@@ -2320,7 +2353,9 @@ function drawSignal(fill) {
   drawDots(fill, SIGNAL);
 }
 /* the landing marker: Tie-Break's target ring on the pitching spot. If the ball will move off the pitch, a
-   wedge on the ring's rim points the way it will go, longer for more movement; a ball that holds its line has none */
+   wedge on the ring's rim points the way it will go, longer for more movement (about 4 px for the smallest swing to
+   10 px for the biggest turn), since that is how much hitting across it costs (see CROSS); a ball that holds its
+   line has none */
 function drawMarker(d) {
   const p = project(d.P.x, d.P.y, 0), rx = 8, ry = 4;
   const ring = [], outer = [];
@@ -2336,7 +2371,7 @@ function drawMarker(d) {
   let ux = q.sx - p.sx, uy = q.sy - p.sy;
   const n = Math.hypot(ux, uy);
   ux /= n; uy /= n;
-  const edge = 1 / Math.hypot(ux / rx, uy / ry), base = edge + 2, tip = base + 3 + d.amount * 8, half = 3;
+  const edge = 1 / Math.hypot(ux / rx, uy / ry), base = edge + 2, tip = base + 2 + Math.max(0, d.amount - .5) * 18, half = 3;
   const bx = p.sx + ux * base, by = p.sy + uy * base, tx = p.sx + ux * tip, ty = p.sy + uy * tip;
   const fill = [];
   for (let iy = Math.floor(Math.min(by, ty) - half - 1); iy <= Math.ceil(Math.max(by, ty) + half + 1); iy++) {
