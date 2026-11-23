@@ -142,8 +142,11 @@ const DIR_WORLD = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], 
 // right-hander: S, SW, W go to the leg side (+y) and N, NE, E to the off side (-y); a left-hander has them swapped
 const LEG_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG > 0), OFF_SIDE = [0, 1, 2, 4, 5, 6].filter(k => DIR_WORLD[k][1] * LEG < 0);
 const DONE_T = 1.6;                                // how long a ball's result stays up before the bowler walks back
-// the match: chase a random target in OVERS overs of six balls with WICKETS wickets. The rival's score is target - 1
-const OVERS = 5, WICKETS = 3, TARGET = [35, 70];
+// the match: chase a random target in OVERS overs of six balls with WICKETS wickets. The rival's score is target - 1.
+// TARGET is tuned by simulation: a player who reads the field and hits into the gaps wins about 6 in 10 with sharp
+// timing, about 4 in 10 with average timing and about 1 in 10 with loose timing; 85 needs no more than about 13
+// boundaries in the 30 balls
+const OVERS = 5, WICKETS = 3, TARGET = [50, 85];
 const REPLAY_T = .6;                               // the result has to be up this long before a tap starts a new match
 const HOLD_T = .9;                                 // of that, how long everyone holds still (or celebrates) first
 const ROSE_IN = 15, ROSE_OUT = 23;                 // the direction guide around the batter, in canvas pixels
