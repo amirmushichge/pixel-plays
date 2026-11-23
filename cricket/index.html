@@ -99,13 +99,13 @@ const ARM_RELEASE = -3.4;                          // bowling arm just past vert
    pitch: the range of pitching spots along x. move: how far the ball has moved sideways by the time it reaches
    the stumps. window: |press - arrival| limits for perfect, good and mistimed; anything wider is a miss. */
 const BOWLERS = {
-  fast: { mark: -11, run: 6.8, stride: 10, step: .3, lean: .22, deliver: .3, speed: 15, after: .85, bounce: .55, pitch: [2.6, 4.8], move: [.4, .5], moves: ['in', 'away', 'none'], window: [.03, .055, .09] },
-  spin: { mark: -6.8, run: 2.4, stride: 6, step: .16, lean: .06, deliver: .4, speed: 9.5, after: .8, bounce: .42, pitch: [1.6, 4.2], move: [.6, .8], moves: ['in', 'away'], window: [.045, .09, .15] },
+  fast: { mark: -11, run: 6.8, stride: 10, step: .3, lean: .22, deliver: .3, speed: 15, after: .85, bounce: .55, pitch: [2.6, 4.8], move: [.4, .5], moves: ['in', 'away', 'none'], window: [.07, .15, .26] },
+  spin: { mark: -6.8, run: 2.4, stride: 6, step: .16, lean: .06, deliver: .4, speed: 9.5, after: .8, bounce: .42, pitch: [1.6, 4.2], move: [.6, .8], moves: ['in', 'away'], window: [.09, .20, .36] },
 };
 // where the ball is aimed at the stumps before any movement, relative to PITCH_Y
 const LINES = { stumps: [-.06, .06], off: [.55, .68], leg: [-.68, -.55] };
 const LINE_ODDS = ['stumps', 'stumps', 'off', 'off', 'leg'];
-const AGAINST_LINE = .65;                          // timing windows shrink by this when you hit against the line
+const AGAINST_LINE = .85;                          // timing windows shrink by this when you hit against the line
 const GRADES = ['perfect', 'good', 'mistimed', 'miss'];
 // the 8 screen compass directions from the batter, and the same directions in world (x, y)
 const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
