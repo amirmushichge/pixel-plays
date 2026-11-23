@@ -18,7 +18,7 @@
   .team b { font-size: 16px; font-weight: 600; min-width: 2ch; font-variant-numeric: tabular-nums; }
   .team span { color: var(--muted); font-variant-numeric: tabular-nums; }
   #you { color: var(--a); } #rival { color: var(--b); }
-  #status { color: var(--muted); }
+  #status { color: var(--muted); text-wrap: balance; }
   #need, #over-row { color: var(--muted); font-variant-numeric: tabular-nums; }
   /* the result takes the need row at the top, clear of the shared credits at the bottom */
   #need.result { color: var(--ink); max-width: calc(100vw - 32px); }
@@ -626,6 +626,16 @@ function setStatus(text) {
   G.status = text;
   nodes.status.textContent = text;
 }
+/* how to play, for a newcomer: until the first swing of the visit, the status line says how to aim and hit, in the
+   words of the input in use (a touch screen has no hover, so a tap does both). It goes up as each ball is bowled, so
+   the outcome of a ball let go by still shows, and the first swing hands the line back to the match */
+const SWING_HINT = { keys: 'arrows or mouse aim · space or click hits', touch: 'tap where you want to hit' };
+let swungYet = false, touchInput = matchMedia('(hover: none)').matches;
+function showHint(refresh) {
+  if (swungYet || !G.match) return;
+  if (refresh && !Object.values(SWING_HINT).includes(G.status)) return;
+  setStatus(touchInput ? SWING_HINT.touch : SWING_HINT.keys);
+}
 
 /* ---------- bowling ----------
    A delivery goes wait -> runup -> flight -> done -> wait. Everything about a ball is planned in bowl() when the
@@ -945,6 +955,7 @@ function bowl(opts = {}) {
     G.overType = G.overType === 'fast' ? 'spin' : 'fast';
     setStatus(G.overType === 'fast' ? 'fast bowler this over' : 'spinner this over');
   }
+  showHint();
   const type = f.type || G.overType, B = BOWLERS[type];
   const line = f.line || pickOne(LINE_ODDS);
   const move = f.move || pickOne(B.moves);
@@ -1016,6 +1027,7 @@ function swingAt(dir, t = G.time) {
   const meet = grade < 3 ? hitAt : d.tContact, cp = ballAt(d, meet), from = batterAt(t);
   G.batter.swing = { t0: t, dir, lineY, grade, from, tc: Math.max(grade < 3 ? hitAt : t + BAT_SWING, t + .035), C: { x: cp.x, y: cp.y, z: cp.z } };
   planSwing(G.batter.swing, d);
+  if (!swungYet) { swungYet = true; setStatus(G.you.name + ' need ' + (G.match ? G.match.target - G.match.runs : '') + ' to win'); }
   return d.swing;
 }
 /* the swing met the ball: it leaves the bat in the chosen direction, give or take the grade's scatter, at a speed
@@ -1265,6 +1277,7 @@ function newMatch(target) {
     G.batter.fit = null;
   }
   setStatus(G.you.name + ' need ' + G.match.target + ' to win');
+  showHint();
   renderHud();
 }
 const ballMark = o => o.out ? 'W' : o.runs ? String(o.runs) : '·';
@@ -2505,6 +2518,10 @@ addEventListener('keyup', e => {
   if (spaceTaken && (e.code === 'Space' || e.key === ' ')) { spaceTaken = false; e.preventDefault(); }
 });
 addEventListener('blur', () => { heldArrows.clear(); heldDirKeys.length = 0; });
+// the hint follows the input last used: a touch or pen press, or a mouse or key
+addEventListener('pointerdown', e => { touchInput = e.pointerType !== 'mouse'; showHint(true); }, true);
+addEventListener('pointermove', e => { if (e.pointerType === 'mouse' && touchInput) { touchInput = false; showHint(true); } }, true);
+addEventListener('keydown', () => { if (touchInput) { touchInput = false; showHint(true); } }, true);
 
 /* ---------- sound ----------
    Web Audio, as in Tie-Break: short oscillator blips and filtered noise, no files. The context starts on the first
