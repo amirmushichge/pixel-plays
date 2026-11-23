@@ -105,10 +105,12 @@ const FIG_SCALE = 1;
 /* ---------- bowling and batting ----------
    Times are seconds and speeds are world units per second. The engine's ground is mirrored when seen from above
    (+x runs screen down-right, +y screen down-left), so a right-hander facing the bowler (-x) shows his back to the
-   camera and his chest to -y: for him -y is the off side and +y the leg side. HAND picks the batter; LEG is the
-   sign of y on his leg side. A ball that nips "in" moves towards his body (the leg side) after the bounce, and
-   one that goes "away" moves towards the off side. Ball paths are the same for either hand; only names flip. */
-const HAND = 'right';                              // 'left' mirrors the stance, the sides and every shot
+   camera and his chest to -y: for him -y is the off side and +y the leg side. A left-hander is his mirror image:
+   chest to the camera (+y), so bat meeting ball is seen on every shot, with -y his leg side and +y his off side.
+   HAND picks the batter; LEG is the sign of y on his leg side. A ball that nips "in" moves towards his body (the
+   leg side) after the bounce, and one that goes "away" moves towards the off side. Ball paths are the same for
+   either hand; only names flip. */
+const HAND = 'left';                               // he bats left-handed, facing the camera; 'right' mirrors everything back
 const LEG = HAND === 'right' ? 1 : -1;
 const BALL_R = .2, BALL_COLOR = [216, 236, 72], GRAVITY = 12;  // a tennis ball, drawn a little large so it reads
 const RELEASE_X = -4.4;                            // the bowler's front foot lands just behind the chalk line
