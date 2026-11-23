@@ -2524,20 +2524,53 @@ function knock(at, length, level, freq, q = 4, type = 'bandpass') {
   src.start(at, Math.random() * .2); src.stop(at + length + .02);
 }
 const jit = (a, b) => a + Math.random() * (b - a);  // sound only: never the game's seeded rng
+// the bat-on-ball sound is candidate 7, "Crisp but full", from the bat-sound audition, ported as is. These two helpers
+// are the audition's mode() and burst() (burst is taken by the dust, so renamed); `out` is the node they play into.
+// a damped resonance: a sine held at one pitch, faded in over `attack` seconds and dying away over `decay` seconds.
+// `bend` > 1 starts it that much flatter and lets it settle up to pitch in 20 ms (a rubbery "pop"; 1 = none)
+function ring(out, at, freq, decay, level, attack = .003, bend = 1) {
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(freq / bend, at);
+  if (bend !== 1) o.frequency.exponentialRampToValueAtTime(freq, at + .02);
+  g.gain.setValueAtTime(0, at);
+  g.gain.linearRampToValueAtTime(level, at + attack);
+  g.gain.exponentialRampToValueAtTime(.0001, at + attack + decay);
+  o.connect(g).connect(out);
+  o.start(at); o.stop(at + attack + decay + .02);
+}
+// a burst of noise through a band-pass (a struck, rough body), with a gentle low-pass on top to keep it round.
+// lp = 0 skips the low-pass
+function strike(out, at, freq, q, decay, level, attack = .002, lp = 2500) {
+  const s = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+  s.buffer = noiseBuf;
+  f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+  let tail = f;
+  if (lp) { const l = audio.createBiquadFilter(); l.type = 'lowpass'; l.frequency.value = lp; l.Q.value = .5; f.connect(l); tail = l; }
+  g.gain.setValueAtTime(0, at);
+  g.gain.linearRampToValueAtTime(level, at + attack);
+  g.gain.exponentialRampToValueAtTime(.0001, at + attack + decay);
+  s.connect(f); tail.connect(g).connect(out);
+  s.start(at, Math.random() * .2); s.stop(at + attack + decay + .02);
+}
+// the audition played louder than the game. The hit goes through one gain of this much, which brings a perfect hit's
+// peak down to about 0.4 without changing its shape (scaling the levels inside would: their decays end at a fixed floor)
+const HIT_LEVEL = .66;
 function sfx(kind, amount = 1) {
   if (!audio || muted || audio.state !== 'running') return;
   const now = audio.currentTime + .005;
   if (kind === 'hit') {
-    // bat on tennis ball: a dry wooden pock with no pitch slide. A broadband click, the hollow ring of the ball and
-    // the blade (two damped modes held at one pitch, roughed up with a little noise), and a low thump.
-    // Perfect (0) is fullest, good (1) the plain pock, mistimed (2) thin and clicky
-    const edge = amount >= 2, v = jit(.95, 1.05), loud = [1.2, 1, .65][amount] || 1, body = [1, .6, .2][amount] ?? .6;
-    const f = (edge ? 640 : 470) * jit(.97, 1.03), f2 = (edge ? 1550 : 1180) * jit(.97, 1.03);
-    knock(now, .005, .6 * loud * v * (edge ? 1.5 : 1), jit(2800, 3400), .7);
-    glide(now, f * 1.04, f, .04, .17 * loud * v, 'sine', .001);
-    glide(now, f2 * 1.03, f2, .025, .06 * loud * v * (edge ? 1.6 : 1), 'sine', .001);
-    knock(now, .035, 1.2 * loud * v, f, 4);
-    glide(now, 200 * v, 180 * v, .05, .08 * body * loud, 'sine', .002);
+    // bat on tennis ball: a small click on top of a strong, longer wooden body. Perfect (0) is fullest, good (1) a
+    // little higher and shorter, mistimed (2 or more) higher, thinner and shorter with more click. Each hit varies
+    // about 3% in pitch and 6% in level
+    const g = amount >= 2 ? 2 : amount >= 1 ? 1 : 0;
+    const p = jit(.97, 1.03) * [1, 1.04, 1.14][g], v = jit(.94, 1.06) * [1, .85, .6][g], len = 1.6 * [1, .85, .6][g];
+    const out = audio.createGain();
+    out.gain.value = HIT_LEVEL; out.connect(audio.destination);
+    strike(out, now, 2600 * p, .8, .006, .65 * v * [1, 1, 1.3][g], .0007, 0);
+    ring(out, now, 470 * p, .07 * len, .3 * v, .0015);
+    ring(out, now, 200 * p, .1 * len, .4 * v * [1, .8, .5][g], .002);
+    strike(out, now, 470 * p, 4, .06 * len, 1.2 * v, .0015, 3000);
   } else if (kind === 'bounce') {
     glide(now, 200, 90, .07, .04 + .16 * Math.min(1, amount), 'sine');
     hiss(now, .02, .03 * Math.min(1, amount), 1800);
