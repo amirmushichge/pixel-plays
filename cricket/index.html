@@ -63,7 +63,7 @@
 <dialog id="picker" aria-labelledby="picker-title" aria-describedby="picker-new picker-hint">
   <h2 id="picker-title">Pick your team</h2>
   <p id="picker-new" hidden>Picking a team starts a new match.</p>
-  <p id="picker-hint">You bat in their 1992 kit. The fielding side is drawn from the other eight.</p>
+  <p id="picker-hint">You bat in their 1992 kit. The fielding side is drawn from the rest, in a kit unlike yours.</p>
   <div id="teams" role="group" aria-label="Teams"></div>
   <button id="picker-back" type="button" hidden>back to the match</button>
 </dialog>
@@ -188,6 +188,10 @@ const TEAMS = [
   { id: 'zim', name: 'Zimbabwe', body: [210, 34, 34] },
 ];
 for (const t of TEAMS) t.legs = t.body.map(v => Math.round(v * .78)); // trousers: the body colour, a shade darker
+// kits too close to tell apart at figure size (the four nearest pairs in OKLab, all under 0.16; the next is 0.17,
+// yellow against grey): the random rival is never drawn from these, so the batter always stands out from the field
+const KIT_CLASH = ['eng nz', 'ind sl', 'aus pak', 'wi zim'];
+const kitClash = (a, b) => KIT_CLASH.includes(a.id + ' ' + b.id) || KIT_CLASH.includes(b.id + ' ' + a.id);
 const BLADE = [242, 214, 148];                 // pale willow; the engine's edge shading gives it a darker rim
 
 const BATTER = { x: 7.5, y: PITCH_Y + LEG * .5 }; // on the leg side of the stumps line, so the ball passes in front of his pads
@@ -591,11 +595,12 @@ const G = {
   match: null,
 };
 G.batter.swing = null;
-// dress the batter in your kit and the fielding side in the rival's (drawn from the other eight if not given)
+// dress the batter in your kit and the fielding side in the rival's (drawn from the other eight, less any whose kit
+// is too close to yours, if not given)
 function setTeams(youId, rivalId) {
   const you = TEAMS.find(t => t.id === youId);
-  const others = TEAMS.filter(t => t !== you);
-  const rival = others.find(t => t.id === rivalId) || others[Math.floor(Math.random() * others.length)];
+  const others = TEAMS.filter(t => t !== you), fair = others.filter(t => !kitClash(you, t));
+  const rival = others.find(t => t.id === rivalId) || fair[Math.floor(Math.random() * fair.length)];
   G.you = you; G.rival = rival;
   const dress = (p, team) => { p.palette = { ...kitPalette(team), skin: p.palette.skin, hair: p.palette.hair }; };
   dress(G.batter, you);
@@ -2658,7 +2663,8 @@ muteButton.addEventListener('click', () => {
 
 /* ---------- team picker ----------
    Shown before a match: nine kit swatches in a 3 x 3 grid. Click or tap a team, or move with the
-   arrow keys and press Enter or Space. The rival is drawn at random from the other eight. */
+   arrow keys and press Enter or Space. The rival is drawn at random from the other eight, less any kit too close
+   to yours (KIT_CLASH). */
 const picker = document.getElementById('picker'), teamGrid = document.getElementById('teams');
 const hex = c => '#' + c.map(v => v.toString(16).padStart(2, '0')).join('');
 const teamButtons = TEAMS.map(t => {
