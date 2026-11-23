@@ -614,12 +614,15 @@ function setStatus(text) {
    run-up starts, so the marker can show where it will pitch and the flight can be read off analytically by time:
    straight from the hand to the pitching spot, then straight from there towards its moved line at the stumps. */
 function mulberry32(a) {
-  return () => {
+  const next = () => {
     a = a + 0x6D2B79F5 | 0;
     let t = Math.imul(a ^ a >>> 15, 1 | a);
     t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
+  // where the sequence is, so a ball taken back by a pause can be drawn again exactly (see takeBack)
+  next.state = to => to == null ? a : (a = to);
+  return next;
 }
 let rng = mulberry32(Math.random() * 2 ** 32 >>> 0);
 const range = ([a, b]) => lerp(a, b, rng());
@@ -917,7 +920,7 @@ function bowl(opts = {}) {
   if (G.phase !== 'idle' || G.match && G.match.result) return null;
   const f = { ...G.force, ...opts };
   // what this ball changes before it is settled, so a delivery cut short by a dialog can be taken back (see pause)
-  const undo = { over: G.over, ballInOver: G.ballInOver, overType: G.overType, thisOver: G.match && G.match.thisOver, status: nodes.status.textContent };
+  const undo = { rng: rng.state(), over: G.over, ballInOver: G.ballInOver, overType: G.overType, thisOver: G.match && G.match.thisOver, status: nodes.status.textContent };
   if (G.ballInOver >= 6) {
     G.over++; G.ballInOver = 0;
     if (G.match) G.match.thisOver = [];
@@ -2617,8 +2620,11 @@ addEventListener('resize', fit);
 fit();
 bake();
 /* pause: while any dialog is open (the team picker or the shell's Rules) or the tab is hidden, the match clock
-   stops, so nothing is bowled and no sound cue fires. A delivery that was under way does not count: on the way back
-   it is taken back and bowled again from the mark. A ball that has already been settled plays out as normal */
+   stops, so nothing is bowled and no sound cue fires. Pausing never changes what a ball does:
+   - a ball whose fate is still open (in the run-up, or in flight with no swing made and not yet at the bat) is taken
+     back on the way out and the very same delivery is bowled again from the mark, so it cannot be re-rolled;
+   - once the batter has swung (or pressed a first arrow) or the ball is past the bat, everything stays frozen where
+     it was and carries on from there, so the outcome stands and counts once */
 const pausedNow = () => document.hidden || !!document.querySelector('dialog[open]');
 function checkPause() {
   const p = pausedNow();
@@ -2627,12 +2633,15 @@ function checkPause() {
     const d = G.paused.del;
     G.paused = null;
     // (unless the picker started a new match meanwhile, which has its own fresh delivery)
-    if (d === G.del && (d.stage === 'runup' || d.stage === 'flight' || d.stage === 'live')) takeBack(d);
+    if (d === G.del && unplayed(d)) takeBack(d);
   }
   return !!G.paused;
 }
+const unplayed = d => d.stage === 'runup' || d.stage === 'flight' && !d.swing && !G.chord && G.time < d.tContact;
 function takeBack(d) {
   const u = d.undo;
+  // rewind the random sequence to where this ball was drawn from: the next bowl() repeats type, line, length, movement
+  rng.state(u.rng);
   G.balls--; G.over = u.over; G.ballInOver = u.ballInOver; G.overType = u.overType;
   if (G.match && u.thisOver) G.match.thisOver = u.thisOver;
   G.del = { stage: 'wait', timer: .6 };
