@@ -28,6 +28,8 @@
     text-shadow: 1px 0 #fff, -1px 0 #fff, 0 1px #fff, 0 -1px #fff, 1px 1px #fff, -1px -1px #fff; animation: pp-rise .9s ease-out forwards; }
   .pop.perfect { color: var(--hot); }
   .pop.smash { font-size: 15px; }
+  .pop.lob { color: #2f6f8f; }
+  .pop.gust { color: #b8332a; }
   @keyframes pp-rise { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 -22px; } }
   @media (prefers-reduced-motion: reduce) { .pop { animation-name: pp-fade; } }
   @keyframes pp-fade { from { opacity: 1; } to { opacity: 0; } }
@@ -58,7 +60,9 @@ PixelPlays.mount({
     'When the ball comes to you, a ring closes on the spot where it meets your paddle. Tap, click or press space as it closes.',
     'Perfect timing builds your combo up to ×5. A loose hit resets it and sends a wild ball your partner may not reach.',
     'Hold early and release as the ring closes to smash: double points and a faster ball, but your partner may miss it.',
-    'The rally speeds up and the wind bends the ball, so watch the flag. Three drops and the session is over.',
+    'Double-tap before the ring closes to ready a lob: half points, but it calms the pace and your partner always reaches it.',
+    'Read the trail: white is a high lob, a short streak is a flat drive, red is a dipper that speeds up at the end.',
+    'Wind bends the ball and the flag warns before a gust. The tide comes in as you play. Three drops and the session is over.',
   ],
 });
 </script>
@@ -67,7 +71,9 @@ PixelPlays.mount({
 <script>
 'use strict';
 
-const LAND_X = 15.5, LAND_Y = 10.5, SHORE_Y = -4.3, BAND_Y = SHORE_Y + 1.4, DUNE_X = -10.4;
+const LAND_X = 15.5, LAND_Y = 10.5, SHORE_Y = -4.3, TIDE_MAX = 1.7, BAND_Y = SHORE_Y + TIDE_MAX + 1.5, DUNE_X = -10.4;
+const TIDE_HITS = 160, SUNSET_HITS = 170, LOB_K = 1.45, LOB_COOL = 6, DOUBLE_TAP = .3, DIP_PUSH = 9;
+const CROWD_AT = [6, 11, 16, 22, 30, 40, 54];
 const PLAY_X = 5.6, REACH_F = 1.05, REACH_S = .45, CONTACT_Z = 1.55, PLANE_X = PLAY_X - REACH_F;
 const GRAVITY = 9, BALL_R = .16;
 const SLOW_T = 1.35, FAST_T = .62, PACE_HITS = 36, SMASH_K = .62, SERVE_T = 1.45;
@@ -82,6 +88,18 @@ const BEST_KEY = 'pp-frescobol-best';
 const ME = { shirt: [238, 204, 52], stripe: [38, 132, 84], legs: [32, 84, 150], hair: [36, 28, 22], skin: [176, 120, 86], paddle: [36, 92, 160] };
 const MATE = { shirt: [240, 236, 226], stripe: [206, 70, 56], legs: [44, 44, 56], hair: [120, 72, 40], skin: [222, 170, 132], paddle: [176, 64, 42] };
 const LOCAL = { shirt: [110, 178, 188], stripe: [110, 178, 188], legs: [232, 222, 202], hair: [204, 196, 180], skin: [190, 140, 104] };
+// beachgoers who walk over once a rally gets going: where they stand, and where they walk in from
+const CROWD = [
+  { x: -1.8, y: 5.0, from: [-2.2, 9.6], shirt: [214, 170, 62], stripe: [214, 170, 62], legs: [196, 80, 70], hair: [60, 44, 34], skin: [150, 100, 70] },
+  { x: -3.4, y: 4.9, from: [-7.5, 9], shirt: [240, 236, 226], stripe: [40, 120, 170], legs: [40, 120, 170], hair: [30, 24, 22], skin: [222, 170, 132] },
+  { x: -0.2, y: 4.8, from: [0.6, 9.6], shirt: [168, 88, 104], stripe: [168, 88, 104], legs: [48, 47, 58], hair: [150, 120, 70], skin: [196, 146, 110] },
+  { x: -9.4, y: 3.2, from: [-14.4, 3.4], shirt: [96, 132, 112], stripe: [226, 228, 214], legs: [226, 222, 208], hair: [34, 28, 26], skin: [176, 120, 86] },
+  { x: 1.0, y: 4.6, from: [1.4, 9.6], shirt: [236, 120, 60], stripe: [236, 120, 60], legs: [54, 74, 92], hair: [92, 62, 40], skin: [222, 170, 132] },
+  { x: -2.6, y: 5.9, from: [-3.2, 9.6], shirt: [70, 96, 138], stripe: [240, 234, 218], legs: [60, 58, 64], hair: [200, 190, 170], skin: [190, 140, 104] },
+  { x: -0.9, y: 6.0, from: [0, 9.6], shirt: [226, 222, 208], stripe: [214, 64, 52], legs: [36, 84, 150], hair: [46, 36, 30], skin: [150, 100, 70] },
+];
+const DOG = [196, 138, 74], DOG_DARK = [120, 80, 46];
+const TORCHES = [[-1.9, 6.4], [8.6, 4.2], [-9, 1.4]];
 const GRIP = [64, 52, 44], BALL_COLOR = [250, 112, 64];
 const SAND = [[210, 182, 136], [219, 192, 145], [227, 201, 154], [234, 210, 164]];
 const WET = [[170, 144, 108], [180, 153, 116], [190, 163, 124], [199, 172, 132]];
@@ -131,7 +149,7 @@ function groundColor(x, y, ix, iy, i) {
   return sandColor(x, y, ix, iy);
 }
 function waterline(x, t) {
-  return SHORE_Y + Math.sin(t * .5) * .55 + Math.sin(t * 1.25 + x * .23) * .16 + (noise(x * .3 + 9, t * .15) - .5) * .7;
+  return SHORE_Y + G.tide + Math.sin(t * .5) * .55 + Math.sin(t * 1.25 + x * .23) * .16 + (noise(x * .3 + 9, t * .15) - .5) * .7;
 }
 function shadeOf(c, s) {
   const k = s === 1 ? [.54, .52, .72] : [.36, .34, .56];
@@ -268,6 +286,13 @@ function props() {
   box(6.0, 8.2, 0, 6.12, 8.5, .04, [40, 120, 170], 51);
   box(6.2, 8.25, 0, 6.32, 8.55, .04, [40, 120, 170], 52);
 
+  // bamboo torches, lit at dusk
+  for (const [x, y] of TORCHES) {
+    capsule([x, y, 0], [x, y, 1.7], .05, .045, () => [176, 146, 92], 'rough');
+    box(x - .09, y - .09, 1.7, x + .09, y + .09, 1.86, [92, 70, 52], 71);
+    for (let z = .1; z < 1.8; z += .15) castShadow(x, y, z, .07, 1, 0);
+  }
+
   // lifeguard flag pole; the flag itself is drawn every frame
   box(FLAG_X - .05, FLAG_Y - .05, 0, FLAG_X + .05, FLAG_Y + .05, FLAG_Z, [214, 214, 208], 61);
   for (let z = .1; z < FLAG_Z; z += .12) castShadow(FLAG_X, FLAG_Y, z, .1, 1, 0);
@@ -296,12 +321,16 @@ const pristinePix = new Uint32Array(W * H);
 
 /* ---------- game state ---------- */
 const G = {
-  phase: 'ready', time: 0, timer: 0, score: 0, best: 0, combo: 1, balls: BALLS, rally: 0, myHits: 0, longest: 0, firstRally: true,
-  ball: null, hold: null, lockout: 0, whiff: -9, spark: 0, sparkAt: null, dust: [], streaks: [], cheer: 0, status: '', meta: '',
-  wind: { x: 0, y: 0 }, windBase: { x: 0, y: .6 }, windNow: { x: 0, y: .6 },
+  phase: 'ready', time: 0, timer: 0, score: 0, best: 0, combo: 1, balls: BALLS, rally: 0, heat: 0, myHits: 0, longest: 0, firstRally: true,
+  ball: null, hold: null, lockout: 0, whiff: -9, tapAt: null, taps: [], lobReady: false,
+  spark: 0, sparkAt: null, dust: [], streaks: [], trail: [], cheer: 0, clap: 0, status: '', meta: '',
+  wind: { x: 0, y: 0 }, windBase: { x: 0, y: .6 }, windNow: { x: 0, y: .6 }, gust: null, nextGust: 18,
+  sessionHits: 0, tide: 0, lane: 0, sun: 0,
+  crowd: CROWD.map(c => ({ ...c, state: 'away', px: c.from[0], py: c.from[1], dir: 0, moved: 0 })),
+  dog: { state: 'off', x: -14.4, y: 3.8, tx: 0, ty: 0, dir: 0, speed: 5, moved: 0, carry: false, next: 22 },
   who: [
-    { x: PLAY_X, y: 0, dir: Math.PI, swing: -1, smash: false, moved: 0, lunge: 0, step: 0 },
-    { x: -PLAY_X, y: 0, dir: 0, swing: -1, smash: false, moved: 0, lunge: 0, step: 0, fail: false },
+    { x: PLAY_X, y: 0, dir: Math.PI, swing: -1, smash: false, shot: 'normal', moved: 0, lunge: 0, step: 0 },
+    { x: -PLAY_X, y: 0, dir: 0, swing: -1, smash: false, shot: 'normal', moved: 0, lunge: 0, step: 0, fail: false },
   ],
 };
 try { G.best = +localStorage.getItem(BEST_KEY) || 0; } catch { G.best = 0; }
@@ -330,13 +359,15 @@ function setStatus(text) {
   G.status = text;
   nodes.status.textContent = text;
 }
-const pace = () => clamp(G.rally / PACE_HITS, 0, 1);
+// heat drives the pace: every shot adds one, a lob takes some back
+const pace = () => clamp(G.heat / PACE_HITS, 0, 1);
 // past full pace the squeeze keeps going slowly, so even a flawless rally ends eventually
-const overtime = () => clamp((G.rally - PACE_HITS) / 90, 0, 1);
+const overtime = () => clamp((G.heat - PACE_HITS) / 90, 0, 1);
 const tightness = () => lerp(1, TIGHTEN, pace()) * (1 - .3 * overtime());
 const flightT = () => lerp(SLOW_T, FAST_T, pace()) * (1 - .18 * overtime());
 const okWindow = () => WIN_OK * tightness();
 const charged = () => G.hold && G.time - G.hold.t0 >= HOLD_SMASH && G.phase === 'rally';
+const laneMin = () => G.lane - 4, laneMax = () => Math.min(G.lane + 4, 4.2);
 function pop(text, cls, x, y, z) {
   const p = project(x, y, z), r = canvas.getBoundingClientRect(), k = r.width / W;
   const el = document.createElement('div');
@@ -361,12 +392,25 @@ function stepWind(dt) {
   const gust = (noise(G.time * .45, 3.3) - .5) * 2, side = (noise(G.time * .3, 9.1) - .5) * 2;
   G.wind.x = w.x * (1 + .6 * gust) - w.y * .25 * side;
   G.wind.y = w.y * (1 + .6 * gust) + w.x * .25 * side;
+  // a big gust: the flag warns first, then it swells and fades over a couple of seconds
+  if (G.gust) {
+    const u = (G.time - G.gust.t0) / G.gust.dur;
+    if (u >= 1) G.gust = null;
+    else if (u > 0) { const e = Math.sin(Math.PI * u); G.wind.x += G.gust.x * e; G.wind.y += G.gust.y * e; }
+  } else if (G.phase === 'rally' && G.heat >= 6 && G.time > G.nextGust) {
+    const a = (Math.random() < .5 ? -1 : 1) * Math.PI / 2 + (Math.random() - .5) * .8, m = 1.6 + 1.2 * pace();
+    G.gust = { t0: G.time + 1.4, dur: 2.4, x: Math.cos(a) * m, y: Math.sin(a) * m };
+    G.nextGust = G.time + 14 + Math.random() * 12;
+    pop('gust', 'gust', FLAG_X, FLAG_Y, FLAG_Z + .7);
+    sound('whoosh');
+  }
 }
+const gustWarning = () => G.gust && G.time < G.gust.t0;
 
 /* ---------- flight ---------- */
-// time until the ball reaches the plane x = planeX under the current wind, and where it will be
+// time until the ball reaches the plane x = planeX under the current wind and spin, and where it will be
 function crossing(b, planeX) {
-  const a = .5 * G.wind.x, v = b.vx, c = b.x - planeX;
+  const a = .5 * (G.wind.x + (b.ax || 0)), v = b.vx, c = b.x - planeX;
   let tau;
   if (Math.abs(a) < 1e-5) tau = -c / v;
   else {
@@ -378,20 +422,23 @@ function crossing(b, planeX) {
   if (!(tau > 0) || !isFinite(tau)) return null;
   return { tau, y: b.y + b.vy * tau + .5 * G.wind.y * tau * tau, z: b.z + b.vz * tau - .5 * GRAVITY * tau * tau };
 }
-function launch(by, T, spread) {
-  const from = G.ball, recv = 1 - by, planeX = recv === 0 ? PLANE_X : -PLANE_X;
-  const ty = clamp(G.who[recv].y * .25 + (Math.random() - .5) * 2 * spread, -3.2, 3.2);
-  const tz = CONTACT_Z + (Math.random() - .5) * .5;
-  const ax = G.wind.x * .5, ay = G.wind.y * .5; // the hitter reads half the wind
+// kind: normal, lob (high and slow), drive (flat and fast), dip (topspin: starts slow and speeds up)
+function launch(by, T, spread, kind = 'normal') {
+  const from = G.ball, recv = 1 - by, planeX = recv === 0 ? PLANE_X : -PLANE_X, R = G.who[recv];
+  const ty = clamp(G.lane + (R.y - G.lane) * .25 + (Math.random() - .5) * 2 * spread, G.lane - 3.2, Math.min(G.lane + 3.2, 3.6));
+  const tz = CONTACT_Z + (Math.random() - .5) * .5 - (kind === 'drive' ? .15 : 0);
+  const spin = kind === 'dip' ? (recv === 0 ? 1 : -1) * DIP_PUSH : 0;
+  const ax = G.wind.x * .5 + spin, ay = G.wind.y * .5; // the hitter reads half the wind, and all of its own spin
   G.ball = {
-    x: from.x, y: from.y, z: from.z, by, t: 0,
+    x: from.x, y: from.y, z: from.z, by, t: 0, kind, ax: spin,
     vx: (planeX - from.x - .5 * ax * T * T) / T,
     vy: (ty - from.y - .5 * ay * T * T) / T,
     vz: (tz - from.z + .5 * GRAVITY * T * T) / T,
     tc: null, crossPt: null, hit: false, dead: false, landed: false, held: false,
   };
-  G.rally++;
+  G.rally++; G.heat++; G.sessionHits++;
   G.longest = Math.max(G.longest, G.rally);
+  G.trail = [];
   G.spark = .09; G.sparkAt = { x: from.x, y: from.y, z: from.z };
 }
 function contactError() {
@@ -401,37 +448,51 @@ function contactError() {
   const c = crossing(b, PLANE_X);
   return c ? -c.tau : null;
 }
-function hitMe(e, smash) {
+function hitMe(e, shot) {
   const b = G.ball, me = G.who[0], tight = tightness(), ae = Math.abs(e);
   const grade = ae <= WIN_PERFECT * tight ? 'perfect' : ae <= WIN_GOOD * tight ? 'good' : 'ok';
+  const smash = shot === 'smash', lob = shot === 'lob';
   b.hit = true;
-  G.combo = grade === 'perfect' ? Math.min(COMBO_MAX, G.combo + 1) : grade === 'ok' ? 1 : G.combo;
+  G.lobReady = false; G.tapAt = null;
+  // a lob holds the combo but never builds it
+  if (grade === 'ok') G.combo = 1;
+  else if (grade === 'perfect' && !lob) G.combo = Math.min(COMBO_MAX, G.combo + 1);
   G.myHits++;
-  const pts = Math.round((4 + G.myHits) * { perfect: 3, good: 2, ok: 1 }[grade] * G.combo * (smash ? 2 : 1));
+  const pts = Math.max(1, Math.round((4 + G.myHits) * { perfect: 3, good: 2, ok: 1 }[grade] * G.combo * (smash ? 2 : lob ? .5 : 1)));
   G.score += pts;
-  // the partner only drops what you make hard: a clean perfect is always returned
+  // the partner only drops what you make hard: a clean perfect, or any decent lob, is always returned
   const gusty = Math.hypot(G.wind.x, G.wind.y) / WIND_MAX;
-  const miss = { perfect: 0, good: .015, ok: .14 }[grade] * (1 + pace()) + (grade === 'perfect' ? 0 : gusty * .04)
-    + (smash ? .06 + pace() * .12 : 0);
+  const miss = lob ? (grade === 'ok' ? .05 : 0)
+    : { perfect: 0, good: .015, ok: .14 }[grade] * (1 + pace()) + (grade === 'perfect' ? 0 : gusty * .04) + (smash ? .06 + pace() * .12 : 0);
   G.who[1].fail = Math.random() < miss;
   const base = flightT();
-  me.smash = smash; me.swing = 0;
-  launch(0, smash ? base * SMASH_K : base * (grade === 'ok' ? 1.12 : 1), { perfect: .25, good: .7, ok: 1.7 }[grade]);
-  pop((smash ? 'smash ' : grade === 'ok' ? 'loose ' : grade + ' ') + '+' + pts, (grade === 'perfect' ? 'perfect' : '') + (smash ? ' smash' : ''), me.x, me.y, 3.2);
+  me.smash = smash; me.shot = lob ? 'lob' : 'normal'; me.swing = 0;
+  const T = smash ? base * SMASH_K : lob ? Math.max(base, .9) * LOB_K : base * (grade === 'ok' ? 1.12 : 1);
+  launch(0, T, lob ? .3 : { perfect: .25, good: .7, ok: 1.7 }[grade], smash ? 'drive' : lob ? 'lob' : 'normal');
+  if (lob) G.heat = Math.max(0, G.heat - LOB_COOL);
+  const label = smash ? 'smash' : lob ? 'lob' : grade === 'ok' ? 'loose' : grade;
+  pop(label + ' +' + pts, (grade === 'perfect' ? 'perfect' : '') + (smash ? ' smash' : ''), me.x, me.y, 3.2);
   sound(smash ? 'smash' : 'hit', grade === 'perfect' ? 1 : .6);
   if (grade === 'perfect') sound('ping', G.combo);
-  if (G.combo === COMBO_MAX && grade === 'perfect') G.cheer = 1.2;
+  if (grade === 'perfect' && G.combo >= 3) G.clap = .7;
+  if (G.combo === COMBO_MAX && grade === 'perfect' && !lob) { G.cheer = 1.2; sound('cheer', .6); }
   if (G.rally % 12 === 0) newWind();
   setStatus('rally ' + G.rally);
   renderHud();
 }
 function partnerHit() {
-  const bot = G.who[1], base = flightT(), r = Math.random();
-  // lobs and drives keep the rhythm honest
-  const T = r < .15 ? base * 1.3 : r < .3 ? base * .88 : base * (.95 + Math.random() * .12);
-  bot.swing = 0; bot.smash = false; bot.fail = false;
-  launch(1, T, .9 + pace() * .6);
-  sound('hit', .5);
+  const bot = G.who[1], base = flightT(), p = pace(), r = Math.random();
+  // after your lob the partner plays it straight; otherwise the mix gets spicier with the pace
+  let kind = 'normal';
+  if (G.ball.kind !== 'lob') {
+    if (r < .12 + .08 * p) kind = 'lob';
+    else if (r < .2 + .22 * p) kind = 'drive';
+    else if (G.heat >= 8 && r < .23 + .37 * p) kind = 'dip';
+  }
+  const T = kind === 'lob' ? base * 1.35 : kind === 'drive' ? base * .8 : kind === 'dip' ? base * 1.02 : base * (.95 + Math.random() * .1);
+  bot.swing = 0; bot.smash = false; bot.shot = kind; bot.fail = false;
+  launch(1, T, .9 + p * .6, kind);
+  sound('hit', kind === 'drive' ? .9 : .5);
   setStatus('rally ' + G.rally);
 }
 function partnerReach(b) {
@@ -447,16 +508,17 @@ function drop(text) {
   if (G.phase !== 'rally') return;
   G.balls--;
   G.combo = 1;
-  G.hold = null;
+  G.hold = null; G.tapAt = null; G.lobReady = false;
   G.timer = 0;
   sound('drop');
+  if (G.dog.state === 'off' && Math.random() < .6) G.dog.state = 'waiting'; // the dog may come for the ball
   if (G.balls > 0) {
     G.phase = 'dropped';
     setStatus(text + ' · ' + G.balls + (G.balls === 1 ? ' ball left' : ' balls left'));
   } else {
     G.phase = 'over';
     const record = G.score > G.best;
-    if (record) { G.best = G.score; G.cheer = 2.4; try { localStorage.setItem(BEST_KEY, String(G.best)); } catch {} }
+    if (record) { G.best = G.score; G.cheer = 2.4; sound('cheer', 1); try { localStorage.setItem(BEST_KEY, String(G.best)); } catch {} }
     setStatus((record ? 'new best ' : 'session over · ') + G.score + ' pts · longest rally ' + G.longest + ' · tap to play again');
   }
   renderHud();
@@ -469,11 +531,13 @@ function lateReason() {
 
 /* ---------- rallies ---------- */
 function startRally() {
-  G.rally = 0; G.myHits = 0; G.hold = null; G.lockout = 0;
+  G.rally = 0; G.heat = 0; G.myHits = 0; G.hold = null; G.lockout = 0; G.tapAt = null; G.lobReady = false;
   G.who[1].fail = false;
   newWind();
-  const bot = G.who[1];
-  G.ball = { x: bot.x + .55, y: bot.y + .45, z: 1.5, vx: 0, vy: 0, vz: 0, held: true, by: 1, t: 0 };
+  const bot = G.who[1], dog = G.dog;
+  G.ball = { x: bot.x + .55, y: bot.y + .45, z: 1.5, vx: 0, vy: 0, vz: 0, held: true, by: 1, t: 0, kind: 'normal' };
+  if (dog.state === 'waiting') dog.state = 'off';
+  else if (dog.state === 'fetch' || dog.state === 'sit') { dog.state = 'leave'; dog.tx = dog.x < 0 ? -14.4 : 14.4; dog.ty = dog.y; dog.speed = 3.2; }
   G.phase = 'serve';
   G.timer = 0;
   setStatus(G.firstRally ? 'tap as the ring closes' : '');
@@ -481,37 +545,50 @@ function startRally() {
   renderHud();
 }
 function resetGame() {
-  G.score = 0; G.balls = BALLS; G.longest = 0; G.combo = 1;
+  G.score = 0; G.balls = BALLS; G.longest = 0; G.combo = 1; G.sessionHits = 0;
   bakedPix.set(pristinePix);
   seaStep = -1;
   startRally();
 }
 
 /* ---------- input ---------- */
+function whiff(lock) {
+  const me = G.who[0];
+  me.swing = 0; me.smash = false; me.shot = 'normal';
+  G.lockout = lock; G.whiff = G.time; G.tapAt = null; G.lobReady = false;
+  sound('whiff');
+}
 function press() {
   ensureAudio();
   if (G.phase === 'ready') return startRally();
   if (G.phase === 'over') { if (G.timer > .8) resetGame(); return; }
   if (G.phase === 'dropped') { if (G.timer > .5) startRally(); return; }
   if (G.lockout > 0 || G.hold) return;
+  G.taps = G.taps.filter(t => G.time - t < .5);
+  G.taps.push(G.time);
   const e = contactError(), win = okWindow();
-  if (e != null && Math.abs(e) <= win) return hitMe(e, false);
+  if (e != null && Math.abs(e) <= win) return hitMe(e, G.lobReady ? 'lob' : 'normal');
   if (e != null && e > win) return;
+  if (G.taps.length >= 3) return whiff(.5); // mashing never works
+  if (G.tapAt != null && G.time - G.tapAt < DOUBLE_TAP && !G.lobReady) {
+    G.tapAt = null;
+    G.lobReady = true;
+    const me = G.who[0];
+    pop('lob ready', 'lob', me.x, me.y, 3.2);
+    sound('arm');
+    return;
+  }
   G.hold = { t0: G.time }; // contact happens on release: hold early to smash
 }
 function release() {
   if (!G.hold) return;
   const held = G.time - G.hold.t0;
   G.hold = null;
-  if (G.phase !== 'rally') return;
+  if (G.phase !== 'rally' && G.phase !== 'serve') return;
   const e = contactError();
-  if (e != null && Math.abs(e) <= okWindow()) return hitMe(e, held >= HOLD_SMASH);
-  // swung at air: a short lockout, so mashing never works
-  const me = G.who[0];
-  me.swing = 0; me.smash = held >= HOLD_SMASH;
-  G.lockout = LOCKOUT;
-  G.whiff = G.time;
-  sound('whiff');
+  if (e != null && Math.abs(e) <= okWindow()) return hitMe(e, held >= HOLD_SMASH ? 'smash' : G.lobReady ? 'lob' : 'normal');
+  if (held < HOLD_SMASH) { G.tapAt = G.time; return; } // maybe the first half of a double-tap; judged in update
+  whiff(LOCKOUT); // swung at air
 }
 
 /* ---------- physics ---------- */
@@ -521,9 +598,9 @@ function puff(b, wet) {
   }
 }
 function stepBall(b, dt) {
-  if (b.held) return;
+  if (b.held || b.carried) return;
   const px = b.x, air = b.z > BALL_R + .001 || b.vz > 0;
-  const ax = air ? G.wind.x : 0, ay = air ? G.wind.y : 0;
+  const ax = air ? G.wind.x + (b.ax || 0) : 0, ay = air ? G.wind.y : 0;
   b.x += b.vx * dt + .5 * ax * dt * dt; b.vx += ax * dt;
   b.y += b.vy * dt + .5 * ay * dt * dt; b.vy += ay * dt;
   b.z += b.vz * dt - .5 * GRAVITY * dt * dt; b.vz -= GRAVITY * dt;
@@ -545,10 +622,12 @@ function stepBall(b, dt) {
     }
     if (!b.landed) {
       b.landed = true;
+      b.wet = wet;
       puff(b, wet);
       sound(wet ? 'splash' : 'thud');
       if (!wet) { markSand(b.x, b.y); markSand(b.x + .1, b.y + .1); }
     }
+    b.ax = 0;
     if (wet) { b.vz = 0; b.vx *= .92; b.vy *= .92; }
     else if (b.vz < -1.2) { b.vz *= -.35; b.vx *= .6; b.vy *= .6; } // sand eats the bounce
     else {
@@ -565,13 +644,66 @@ function moveY(p, ty, speed, dt) {
   p.y += Math.sign(d) * step;
   p.moved = dt > 0 ? step / dt : 0;
 }
+function walk(p, tx, ty, speed, dt) {
+  const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy), step = Math.min(d, speed * dt);
+  if (d > .01) { p.x += dx / d * step; p.y += dy / d * step; p.dir = Math.atan2(dy, dx); }
+  p.moved = dt > 0 ? step / dt : 0;
+  return d - step;
+}
+// beachgoers drift over as the rally grows, and drift away when it ends
+function stepCrowd(dt) {
+  const n = CROWD_AT.filter(v => G.rally >= v).length;
+  G.crowd.forEach((c, k) => {
+    if (k < n && c.state === 'away') c.state = 'in';
+    if (k >= n && c.state === 'in') c.state = 'out';
+    if (c.state === 'away') return;
+    const at = { x: c.px, y: c.py, dir: c.dir, moved: 0 };
+    const left = c.state === 'in' ? walk(at, c.x, c.y, 2.6, dt) : walk(at, c.from[0], c.from[1], 2.2, dt);
+    c.px = at.x; c.py = at.y; c.dir = at.dir; c.moved = at.moved;
+    if (c.state === 'out' && left < .05) c.state = 'away';
+  });
+}
+function stepDog(dt) {
+  const d = G.dog, b = G.ball;
+  if (d.state === 'off') {
+    if (G.phase === 'rally' && G.time > d.next) {
+      const fromLeft = Math.random() < .5;
+      d.state = 'cross'; d.x = fromLeft ? -14.4 : 14.4; d.y = clamp(G.lane + 3.6, 2.6, 4.1);
+      d.tx = -d.x; d.ty = d.y; d.speed = 5.5;
+      d.next = G.time + 30 + Math.random() * 30;
+      sound('bark');
+    }
+    return;
+  }
+  if (d.state === 'waiting') {
+    if (!b || !b.landed) return;
+    if (b.wet) { d.state = 'off'; return; } // not into the sea
+    d.state = 'fetch'; d.x = b.x < 0 ? -14.4 : 14.4; d.y = clamp(b.y, -1, 8); d.speed = 6.5;
+    sound('bark');
+  }
+  if (d.state === 'fetch') { d.tx = b.x - Math.cos(d.dir) * .7; d.ty = b.y - Math.sin(d.dir) * .7; }
+  if (d.state === 'sit') { d.moved = 0; return; }
+  const left = walk(d, d.tx, d.ty, d.speed, dt);
+  if (left > .05) return;
+  if (d.state === 'fetch') { d.state = 'sit'; d.carry = true; b.carried = true; b.hidden = true; sound('bark'); }
+  else { d.state = 'off'; d.carry = false; }
+}
 function update(dt) {
   G.time += dt;
   G.timer += dt;
   G.lockout = Math.max(0, G.lockout - dt);
   G.spark = Math.max(0, G.spark - dt);
   G.cheer = Math.max(0, G.cheer - dt);
+  G.clap = Math.max(0, G.clap - dt);
   stepWind(dt);
+  if (G.tapAt != null && G.time - G.tapAt >= DOUBLE_TAP) {
+    G.tapAt = null;
+    if (G.phase === 'rally' || G.phase === 'serve') whiff(LOCKOUT);
+  }
+  // the tide comes in over a session and the players give it the ground; the sun goes down with it
+  G.tide = lerp(G.tide, TIDE_MAX * clamp(G.sessionHits / TIDE_HITS, 0, 1), Math.min(1, dt * .3));
+  G.lane = G.tide;
+  G.sun = lerp(G.sun, clamp(G.sessionHits / SUNSET_HITS, 0, 1), Math.min(1, dt * .25));
   const me = G.who[0], bot = G.who[1];
   for (const p of G.who) {
     if (p.swing >= 0) { p.swing += dt / (p.smash ? .3 : .24); if (p.swing >= 1) { p.swing = -1; p.smash = false; } }
@@ -579,22 +711,22 @@ function update(dt) {
   }
   for (const d of G.dust) { d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt; d.vz -= 8 * dt; d.life -= dt; }
   if (G.dust.length) G.dust = G.dust.filter(d => d.life > 0 && d.z > 0);
-  const ws = Math.hypot(G.wind.x, G.wind.y);
+  const ws = Math.hypot(G.wind.x, G.wind.y) * (gustWarning() ? 2.5 : 1);
   if (!STILL && Math.random() < ws * dt * 5) G.streaks.push({ x: -14 + Math.random() * 28, y: -2.4 + Math.random() * 11, life: .7 + Math.random() * .5 });
   for (const s of G.streaks) { s.x += G.wind.x * 2.4 * dt; s.y += G.wind.y * 2.4 * dt; s.life -= dt; }
   if (G.streaks.length) G.streaks = G.streaks.filter(s => s.life > 0);
 
   const b = G.ball;
   if (G.phase === 'serve') {
-    moveY(me, 0, 3, dt); moveY(bot, 0, 3, dt);
+    moveY(me, G.lane, 3, dt); moveY(bot, G.lane, 3, dt);
     b.x = bot.x + .55; b.y = bot.y + .45; b.z = 1.5;
-    if (G.timer > .9) { bot.swing = 0; launch(1, SERVE_T, .4); G.phase = 'rally'; sound('hit', .4); }
+    if (G.timer > .9) { bot.swing = 0; bot.shot = 'normal'; launch(1, SERVE_T, .4); G.phase = 'rally'; sound('hit', .4); }
   } else if (G.phase === 'rally' && b && !b.hit && !b.dead) {
     const recv = 1 - b.by, P = G.who[recv], hitter = G.who[b.by], planeX = recv === 0 ? PLANE_X : -PLANE_X;
     if (b.tc == null) {
       const c = crossing(b, planeX);
       if (c) {
-        const ty = clamp(c.y + (recv === 0 ? REACH_S : -REACH_S), -4, 4);
+        const ty = clamp(c.y + (recv === 0 ? REACH_S : -REACH_S), laneMin(), laneMax());
         let speed = Math.min(RUN_MAX, Math.abs(ty - P.y) / Math.max(.06, c.tau - .08));
         if (recv === 1 && P.fail) speed *= .45;
         moveY(P, ty, speed, dt);
@@ -603,7 +735,7 @@ function update(dt) {
       b.dead = true;
       drop(lateReason());
     }
-    moveY(hitter, hitter.y * .5, 1.2, dt);
+    moveY(hitter, G.lane + (hitter.y - G.lane) * .5, 1.2, dt);
   } else {
     if (G.phase === 'dropped' && G.timer > 1.9) startRally();
     moveY(me, me.y, 0, dt); moveY(bot, bot.y, 0, dt);
@@ -615,6 +747,10 @@ function update(dt) {
     }
   }
   if (G.ball && !G.ball.held) for (let k = 0; k < 4; k++) stepBall(G.ball, dt / 4);
+  const nb = G.ball;
+  if (nb && !nb.held && !nb.landed && !nb.dead) { G.trail.push([nb.x, nb.y, nb.z]); if (G.trail.length > 9) G.trail.shift(); }
+  stepCrowd(dt);
+  stepDog(dt);
   renderMeta();
 }
 
@@ -635,10 +771,15 @@ function poseOf(p, i) {
   if (p.swing >= 0) {
     const t = ease(p.swing);
     if (p.smash) return { pose: { ...base, crouch: .3, lean: lerp(-.05, .3, t), armR: lerp(-1.3, 2.4, t), armL: lerp(1, .2, t) }, twist: lerp(1, -.6, t) };
+    // each shot has its own swing, so the partner's tells start before the trail does
+    if (p.shot === 'lob') return { pose: { ...base, crouch: .34, lean: lerp(.25, -.1, t), armR: lerp(-.5, 1.1, t), armL: lerp(.6, .9, t) }, twist: lerp(.3, -.1, t) };
+    if (p.shot === 'drive') return { pose: { ...base, crouch: .24, armR: lerp(-.6, 1.9, t), armL: lerp(1.1, .1, t) }, twist: lerp(.95, -.7, t) };
+    if (p.shot === 'dip') return { pose: { ...base, crouch: .3, lean: .25, armR: lerp(.2, 2.3, t), armL: lerp(.8, .3, t) }, twist: lerp(.6, -.45, t) };
     return { pose: { ...base, crouch: .26, armR: lerp(-.2, 1.7, t), armL: lerp(.8, .3, t) }, twist: lerp(.55, -.35, t) };
   }
   if (p.lunge > 0) return { pose: { crouch: .55, lean: .55, stance: .55, armR: 1.5, armL: .2 }, twist: .4 };
   if (i === 0 && charged()) return { pose: { ...base, crouch: .3, armR: -1.2, armL: 1 }, twist: .9 };
+  if (i === 0 && G.lobReady) return { pose: { ...base, crouch: .36, armR: -.2, armL: .8 }, twist: .2 };
   const b = G.ball;
   if ((G.phase === 'rally' && b && !b.hit && !b.dead && b.by === 1 - i) || (G.phase === 'serve' && i === 0)) {
     return { pose: { ...base, crouch: .26, armR: .5, armL: .7 }, twist: .45 };
@@ -659,14 +800,50 @@ function drawPlayer(i) {
   dynamicAdd(head, head, .21, .21, () => pal.paddle);
   return head;
 }
+const watchYaw = (x, y) => {
+  const b = G.ball, bx = b ? b.x : 0, by = b ? b.y : G.lane;
+  return Math.round(Math.atan2(by - y, bx - x) / .35) * .35; // heads turn in coarse steps
+};
+function cheerArms(k) {
+  const beat = Math.floor(G.time * 8 + k * 1.3) % 2;
+  if (G.cheer > 0) return { armR: beat ? 2.9 : 2.5, armL: beat ? 2.5 : 2.9 };
+  if (G.clap > 0) return { armR: beat ? 1.5 : 1.15, armL: beat ? 1.5 : 1.15 };
+  return null;
+}
 function drawLocal() {
-  const b = G.ball, bx = b ? b.x : 0, by = b ? b.y : 0, L = { x: 5.6, y: 6 };
-  // the local follows the ball in coarse steps, like a head turning
-  const yaw = Math.round(Math.atan2(by - L.y, bx - L.x) / .35) * .35;
-  const beat = G.cheer > 0 && Math.floor(G.time * 8) % 2;
-  const arms = G.cheer > 0 ? { armR: beat ? 2.9 : 2.5, armL: beat ? 2.5 : 2.9 } : { armR: 1.1, armL: .1 };
-  const hand = figure(L.x, L.y, yaw, { scale: .9, stance: .08, ...arms }, LOCAL, beachAdd(LOCAL));
+  const L = { x: 5.6, y: 6 };
+  const hand = figure(L.x, L.y, watchYaw(L.x, L.y), { scale: .9, stance: .08, ...(cheerArms(9) || { armR: 1.1, armL: .1 }) }, LOCAL, beachAdd(LOCAL));
   sphere(hand[0], hand[1], hand[2] + .1, .14, [112, 150, 62], 'solid');
+}
+function drawCrowd() {
+  G.crowd.forEach((c, k) => {
+    if (c.state === 'away') return;
+    const walking = c.moved > .3;
+    const pose = walking
+      ? { scale: .88, stance: .1 + Math.sin(G.time * 11 + k) * .2, armR: Math.sin(G.time * 11 + k) * .3, armL: -Math.sin(G.time * 11 + k) * .3 }
+      : { scale: .88, stance: .07, ...(cheerArms(k) || { armR: .1, armL: .12 }) };
+    figure(c.px, c.py, walking ? c.dir : watchYaw(c.px, c.py), pose, c, beachAdd(c));
+  });
+}
+function drawDog() {
+  const d = G.dog;
+  if (d.state === 'off' || d.state === 'waiting') return;
+  const fx = Math.cos(d.dir), fy = Math.sin(d.dir), run = d.moved > .5, t = G.time * 16;
+  const P = (a, b, z) => [d.x + fx * a - fy * b, d.y + fy * a + fx * b, z];
+  const coat = () => DOG, dark = () => DOG_DARK;
+  dynamicAdd(P(-.32, 0, .44), P(.28, 0, .47), .19, .2, coat);
+  for (const [a, b, ph] of [[.22, .12, 0], [.22, -.12, Math.PI], [-.28, .12, Math.PI], [-.28, -.12, 0]]) {
+    const swing = run ? Math.sin(t + ph) * .2 : 0;
+    dynamicAdd(P(a, b, .36), P(a + swing, b, .05), .06, .05, coat);
+  }
+  const hz = d.state === 'sit' ? .74 : run ? .64 : .7;
+  dynamicAdd(P(.4, 0, .5), P(.5, 0, hz), .1, .1, coat);
+  dynamicAdd(P(.55, 0, hz), P(.55, 0, hz), .16, .16, coat);
+  dynamicAdd(P(.72, 0, hz - .05), P(.72, 0, hz - .05), .08, .08, dark);
+  for (const s of [-1, 1]) dynamicAdd(P(.5, s * .11, hz + .1), P(.47, s * .14, hz - .02), .05, .04, dark);
+  const wag = Math.sin(G.time * (run ? 22 : 12)) * .16;
+  dynamicAdd(P(-.5, 0, .5), P(-.74, wag, .8), .04, .03, coat);
+  if (d.carry) { const m = P(.82, 0, hz - .08); sphere(m[0], m[1], m[2], BALL_R, BALL_COLOR, 'gloss'); }
 }
 function drawSwimmer(t) {
   const x = -2.5, y = -7, z = .04 + Math.sin(t * 1.7) * .05;
@@ -681,16 +858,59 @@ function swimmerRipple(t) {
   drawDots(dots, FOAM_SOFT);
 }
 function drawFlag(t) {
-  const w = G.wind, s = Math.min(1, Math.hypot(w.x, w.y) / WIND_MAX);
-  const ang = Math.atan2(w.y, w.x), cx = Math.cos(ang), cy = Math.sin(ang);
+  const w = G.wind, warn = gustWarning(), s = warn ? 1 : Math.min(1, Math.hypot(w.x, w.y) / WIND_MAX);
+  const ang = warn ? Math.atan2(G.gust.y, G.gust.x) : Math.atan2(w.y, w.x), cx = Math.cos(ang), cy = Math.sin(ang);
   const red = rampOf([214, 52, 44]), yellow = rampOf([248, 206, 52]);
-  const len = .5 + .7 * s, tall = .62, speed = 5 + 8 * s;
+  const len = .5 + .7 * s, tall = .62, speed = (5 + 8 * s) * (warn ? 2.2 : 1);
   for (let u = 0; u <= len; u += .035) {
-    const phase = u * 5 - t * speed, wave = Math.sin(phase) * .12 * (u / len), sag = (1 - s) * u * .55;
+    const phase = u * 5 - t * speed, wave = Math.sin(phase) * (warn ? .2 : .12) * (u / len), sag = (1 - s) * u * .55;
     const light = clamp(Math.round(3 + Math.cos(phase) * .9 * (u / len)), 1, 4);
     for (let v = 0; v <= tall; v += .035) {
       plot(FLAG_X + cx * u - cy * wave, FLAG_Y + cy * u + cx * wave, FLAG_Z - .05 - v - sag, (v < tall / 2 ? red : yellow)[light]);
     }
+  }
+}
+// what the ball's trail says about the shot: white dots for a lob, an ink streak for a drive, red for a dipper
+function drawTrail() {
+  const b = G.ball;
+  if (!b || b.held || b.landed || b.kind === 'normal' || !b.kind || G.trail.length < 2) return;
+  const n = b.kind === 'drive' ? 4 : G.trail.length, pts = [];
+  for (let k = Math.max(0, G.trail.length - n); k < G.trail.length - 1; k++) {
+    if (b.kind === 'lob' && k % 2) continue;
+    const q = project(...G.trail[k]);
+    pts.push([q.sx, q.sy]);
+  }
+  drawDots(pts, b.kind === 'lob' ? PAPER : b.kind === 'dip' ? HOT : INK);
+}
+// golden hour, then dusk: the whole diorama is graded, the white page around it stays white
+function gradeLight() {
+  const s = G.sun;
+  if (s < .02) return;
+  const gold = clamp(s / .6, 0, 1), dusk = clamp((s - .6) / .4, 0, 1);
+  const kr = lerp(lerp(1, 1.06, gold), .8, dusk), kg = lerp(lerp(1, .9, gold), .64, dusk), kb = lerp(lerp(1, .76, gold), .8, dusk);
+  for (let i = 0; i < pix.length; i++) {
+    if (zb[i] < -1e8) continue;
+    const c = pix[i];
+    pix[i] = rgb((c & 255) * kr, (c >> 8 & 255) * kg, (c >> 16 & 255) * kb);
+  }
+}
+function torchLight() {
+  const on = clamp((G.sun - .55) / .25, 0, 1);
+  if (!on) return;
+  for (const [x, y] of TORCHES) {
+    const g = project(x, y, 0);
+    for (let dy = -9; dy <= 9; dy++) for (let dx = -18; dx <= 18; dx++) {
+      const ix = Math.round(g.sx) + dx, iy = Math.round(g.sy) + dy;
+      if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue;
+      const i = iy * W + ix, d = (dx / 18) ** 2 + (dy / 9) ** 2;
+      if (d >= 1 || zb[i] < -1e8 || (1 - d) * on * .9 < bayerAt(ix, iy)) continue;
+      const c = pix[i];
+      pix[i] = rgb((c & 255) * 1.2 + 24, (c >> 8 & 255) * 1.06 + 10, (c >> 16 & 255) * .88);
+    }
+    const f = project(x, y, 1.9), fl = Math.floor(G.time * 12 + x) % 3;
+    const core = [[0, 0], [0, -1], [-1, 0], [1, 0], [0, -2 - (fl === 1)]], rim = [[-1, -1], [1, -1], [0, -3 - fl % 2], [-1, -2], [1, -2]];
+    if (on > .5) drawDots(rim.map(([a, b]) => [f.sx + a, f.sy + b]), rgb(240, 110, 40));
+    drawDots(core.map(([a, b]) => [f.sx + a, f.sy + b]), rgb(255, 214, 90));
   }
 }
 function ringDots(cx, cy, r) {
@@ -710,7 +930,7 @@ function drawRing() {
   if (ttc > RING_SHOW) return;
   const p = project(pt.x, pt.y, pt.z), r0 = 4, r = r0 + ttc * 30;
   drawDots(ringDots(p.sx, p.sy, r + 1), INK);
-  drawDots(ringDots(p.sx, p.sy, r), charged() ? HOT : SIGNAL);
+  drawDots(ringDots(p.sx, p.sy, r), charged() ? HOT : G.lobReady ? PAPER : SIGNAL);
   drawDots(ringDots(p.sx, p.sy, r0 + 1), PAPER);
   drawDots(ringDots(p.sx, p.sy, r0), INK);
 }
@@ -722,11 +942,13 @@ function draw() {
   zb.set(bakedZ);
   pendingShadows.length = 0;
   drawLocal();
+  drawCrowd();
+  drawDog();
   drawSwimmer(windT);
   drawPlayer(1);
   const paddle = drawPlayer(0);
   const b = G.ball;
-  if (b) {
+  if (b && !b.hidden) {
     sphere(b.x, b.y, b.z, BALL_R, BALL_COLOR, 'gloss');
     castShadow(b.x, b.y, b.z - BALL_R, BALL_R * .96, 1, 0);
     if (b.z < BALL_R + .3) castShadow(b.x, b.y, 0, BALL_R * .8, 2, 0);
@@ -737,6 +959,8 @@ function draw() {
   flushShadows();
   applyShadows(bakedZ);
   shadeEdges();
+  gradeLight();
+  torchLight();
   swimmerRipple(windT);
   const sand = [], spray = [];
   for (const d of G.dust) { const q = project(d.x, d.y, d.z); (d.wet ? spray : sand).push([q.sx, q.sy]); }
@@ -752,14 +976,15 @@ function draw() {
     streaks.push([q.sx, q.sy], [(q.sx + t.sx) / 2, (q.sy + t.sy) / 2]);
   }
   drawDots(streaks, DUST);
+  drawTrail();
   if (G.spark > 0 && G.sparkAt) {
     const q = project(G.sparkAt.x, G.sparkAt.y, G.sparkAt.z), dots = [];
     for (const r of [3, 4]) dots.push([q.sx - r, q.sy], [q.sx + r, q.sy], [q.sx, q.sy - r], [q.sx, q.sy + r]);
     drawDots(dots, PAPER);
   }
-  if (charged() && Math.floor(G.time * 10) % 2) {
+  if ((charged() || G.lobReady) && Math.floor(G.time * 10) % 2) {
     const q = project(...paddle);
-    drawDots(ringDots(q.sx, q.sy, 3.5), HOT);
+    drawDots(ringDots(q.sx, q.sy, 3.5), charged() ? HOT : PAPER);
   }
   drawRing();
   ctx.putImageData(image, 0, 0);
@@ -789,6 +1014,7 @@ addEventListener('blur', () => { G.hold = null; });
 
 /* ---------- sound ---------- */
 let audio = null, master = null, muted = false, noiseBuffer = null;
+const layers = []; // surdo, tamborim, agogô, ganzá: one more joins at each combo step from ×2
 function ensureAudio() {
   if (audio) { if (audio.state === 'suspended') audio.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -810,25 +1036,47 @@ function ensureAudio() {
   lfo.connect(depth).connect(swell.gain);
   surf.connect(low).connect(swell).connect(master);
   surf.start(); lfo.start();
+  for (let k = 0; k < 4; k++) { const g = audio.createGain(); g.gain.value = 0; g.connect(master); layers.push(g); }
+  samba.next = audio.currentTime + .1;
+  setInterval(samba, 25);
 }
-function burst(at, length, level, freq, type = 'bandpass') {
+function burst(at, length, level, freq, type = 'bandpass', dest = master) {
   const src = audio.createBufferSource(), gain = audio.createGain(), filter = audio.createBiquadFilter();
   src.buffer = noiseBuffer;
   filter.type = type; filter.frequency.value = freq; filter.Q.value = .8;
   gain.gain.setValueAtTime(level, at);
   gain.gain.exponentialRampToValueAtTime(.0005, at + length);
-  src.connect(filter).connect(gain).connect(master);
+  src.connect(filter).connect(gain).connect(dest);
   src.start(at, Math.random()); src.stop(at + length + .01);
 }
-function tone(at, from, to, length, level, type) {
+function tone(at, from, to, length, level, type, dest = master) {
   const gain = audio.createGain(), osc = audio.createOscillator();
   osc.type = type;
   osc.frequency.setValueAtTime(from, at);
   osc.frequency.exponentialRampToValueAtTime(to, at + length);
   gain.gain.setValueAtTime(level, at);
   gain.gain.exponentialRampToValueAtTime(.0005, at + length);
-  osc.connect(gain).connect(master);
+  osc.connect(gain).connect(dest);
   osc.start(at); osc.stop(at + length + .01);
+}
+// a small batucada scheduled a little ahead of time; it speeds up with the rally
+const TAMBORIM = [0, 3, 6, 8, 11, 14], AGOGO_HI = [0, 6, 10], AGOGO_LO = [2, 4, 12, 14];
+function samba() {
+  if (!audio || document.hidden) return;
+  const now = audio.currentTime, live = G.phase === 'rally' || G.phase === 'serve';
+  layers.forEach((g, k) => g.gain.setTargetAtTime(live && G.combo >= k + 2 ? 1 : 0, now, .35));
+  if (samba.next < now - .2) samba.next = now + .05;
+  const step = 60 / lerp(96, 120, pace()) / 4;
+  while (samba.next < now + .12) {
+    const at = samba.next, k = samba.step = ((samba.step || 0) + 1) % 16;
+    if (k === 0) tone(at, 90, 60, .22, .22, 'sine', layers[0]);
+    if (k === 8) tone(at, 66, 44, .42, .5, 'sine', layers[0]);
+    if (TAMBORIM.includes(k)) { tone(at, 1950, 1700, .03, .05, 'square', layers[1]); burst(at, .02, .05, 4200, 'bandpass', layers[1]); }
+    if (AGOGO_HI.includes(k)) { tone(at, 920, 920, .14, .045, 'triangle', layers[2]); tone(at, 1380, 1380, .08, .02, 'sine', layers[2]); }
+    if (AGOGO_LO.includes(k)) { tone(at, 690, 690, .14, .045, 'triangle', layers[2]); tone(at, 1035, 1035, .08, .02, 'sine', layers[2]); }
+    burst(at, .035, k % 4 ? .025 : .055, 7000, 'highpass', layers[3]);
+    samba.next += step;
+  }
 }
 function sound(kind, amount = .6) {
   if (!audio) return;
@@ -837,9 +1085,13 @@ function sound(kind, amount = .6) {
   else if (kind === 'smash') { burst(now, .04, .22, 2600); tone(now, 820, 240, .09, .3, 'square'); }
   else if (kind === 'ping') tone(now + .03, 1180 + amount * 120, 1180 + amount * 120, .09, .05, 'triangle');
   else if (kind === 'whiff') burst(now, .09, .05, 900);
+  else if (kind === 'arm') { tone(now, 660, 990, .07, .05, 'triangle'); tone(now + .07, 990, 990, .06, .04, 'triangle'); }
   else if (kind === 'thud') { burst(now, .08, .18, 400, 'lowpass'); tone(now, 140, 60, .12, .2, 'sine'); }
   else if (kind === 'splash') { burst(now, .25, .12, 1800); burst(now + .04, .2, .08, 900); }
   else if (kind === 'drop') { tone(now + .05, 520, 330, .14, .06, 'triangle'); tone(now + .2, 390, 250, .2, .06, 'triangle'); }
+  else if (kind === 'bark') { for (const d of [0, .16]) { tone(now + d, 520, 330, .07, .09, 'square'); burst(now + d, .06, .06, 900); } }
+  else if (kind === 'whoosh') { burst(now, .5, .07, 500, 'lowpass'); burst(now + .2, .6, .05, 900); }
+  else if (kind === 'cheer') { for (let k = 0; k < 14; k++) burst(now + k * .07 + Math.random() * .05, .06, (.04 + Math.random() * .04) * amount, 1400 + Math.random() * 1400); }
 }
 const muteButton = document.getElementById('mute');
 muteButton.addEventListener('click', () => {

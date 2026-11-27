@@ -14,7 +14,7 @@ Concept by [abhi](https://x.com/awwbhi2). Game by [AmirMushich](https://x.com/Am
 | [Rooftop Laundry](laundry/) | Get the washing into the basket before the storm | Drag; space |
 | [Tie-Break](tie-break/) | Clay-court tie-break against a bot, the moment you hit decides where the ball lands | Tap; space |
 | [Mini Ramp](mini-ramp/) | 60 seconds on a skateboard ramp, pump for height and grab in the air | Hold and release; space |
-| [Frescobol](frescobol/) | Keep a beach-paddle rally alive with your partner, in the wind, for a high score | Tap; hold and release to smash; space |
+| [Frescobol](frescobol/) | Keep a beach-paddle rally alive with your partner, in the wind, for a high score | Tap; hold and release to smash; double-tap to lob; space |
 
 ## Run
 Requires [Node.js](https://nodejs.org/); nothing to install.
