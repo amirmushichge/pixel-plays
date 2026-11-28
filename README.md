@@ -14,6 +14,7 @@ Concept by [abhi](https://x.com/awwbhi2). Game by [AmirMushich](https://x.com/Am
 | [Rooftop Laundry](laundry/) | Get the washing into the basket before the storm | Drag; space |
 | [Tie-Break](tie-break/) | Clay-court tie-break against a bot, the moment you hit decides where the ball lands | Tap; space |
 | [Mini Ramp](mini-ramp/) | 60 seconds on a skateboard ramp, pump for height and grab in the air | Hold and release; space |
+| [Frescobol](frescobol/) | Keep a beach-paddle rally alive with your partner, in the wind, for a high score | Tap; hold and release to smash; double-tap to lob; space |
 
 ## Run
 Requires [Node.js](https://nodejs.org/); nothing to install.
@@ -25,7 +26,7 @@ node serve.mjs
 Then open http://127.0.0.1:5300/. Any static file server works, and the site deploys as plain static files.
 
 ## Add a game
-Create `<id>/index.html`, load `../shell.js`, call `PixelPlays.mount({ id, rules })`, set `window.PP_SCENE`, load `../engine.js`, then add the game to `GAMES` in `shell.js`. The page needs a `#mute` button. Put its background track at `<id>/<id>.mp3`.
+Create `<id>/index.html`, load `../shell.js`, call `PixelPlays.mount({ id, rules })`, set `window.PP_SCENE`, load `../engine.js`, then add the game to `GAMES` in `shell.js`. The page needs a `#mute` button. Put its background track at `<id>/<id>.mp3`, or pass `music: false`. A game can pass its own `credits` list, and a `GAMES` entry can take an `href`.
 
 - `shell.js` provides the game menu, the Rules popup, the credits and the background music.
 - `engine.js` provides the camera, depth buffer, colour ramps, shadows, edges, figures, trees and wind as globals.

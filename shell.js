@@ -8,6 +8,7 @@ window.PixelPlays = (() => {
     { id: 'laundry', title: 'Rooftop Laundry' },
     { id: 'tie-break', title: 'Tie-Break' },
     { id: 'mini-ramp', title: 'Mini Ramp' },
+    { id: 'frescobol', title: 'Frescobol' },
   ];
   const MUSIC_VOLUME = .4;
   const CREDITS = [
@@ -39,7 +40,7 @@ window.PixelPlays = (() => {
     @media (max-width: 1200px) { #pp-credits { bottom: max(38px, calc(env(safe-area-inset-bottom) + 24px)); } }
     @media (max-width: 600px) { #pp-credits { bottom: max(72px, calc(env(safe-area-inset-bottom) + 58px)); } }
   `;
-  function mount({ id, rules }) {
+  function mount({ id, rules, credits: creditList = CREDITS, music = true }) {
     const game = GAMES.find(g => g.id === id);
     const style = document.createElement('style');
     style.textContent = css;
@@ -65,7 +66,7 @@ window.PixelPlays = (() => {
         item.append(label);
       } else {
         const link = document.createElement('a');
-        link.href = '../' + g.id + '/';
+        link.href = g.href || '../' + g.id + '/';
         link.textContent = g.title;
         if (g.id === id) link.setAttribute('aria-current', 'page');
         item.append(link);
@@ -109,7 +110,7 @@ window.PixelPlays = (() => {
 
     const credits = document.createElement('div');
     credits.id = 'pp-credits';
-    for (const [label, name, url] of CREDITS) {
+    for (const [label, name, url] of creditList) {
       const line = document.createElement('span');
       const link = document.createElement('a');
       link.href = url;
@@ -121,7 +122,7 @@ window.PixelPlays = (() => {
     }
 
     document.body.append(menu, open, dialog, credits);
-    startMusic(id);
+    if (music) startMusic(id);
   }
   // each game loops <id>/<id>.mp3 from the first gesture, because browsers block sound before one.
   // The game's own sound button mutes it too.

@@ -1,0 +1,1123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light only">
+<title>Frescobol</title>
+<style>
+  :root { color-scheme: light only; --ink: #1c1b19; --muted: #8b877f; --paper: #fff; --hot: #d9481f; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #fff; color: #1c1b19; }
+  body { font: 13px/1.35 ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; background: #fff; }
+  canvas { display: block; image-rendering: pixelated; touch-action: none; cursor: pointer; outline: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  #scores { position: fixed; top: max(14px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); display: grid; gap: 3px; pointer-events: none; color: #1c1b19; }
+  #pts { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #combo { color: var(--hot); font-weight: 600; margin-left: 8px; }
+  #balls { display: flex; gap: 4px; height: 6px; margin: 3px 0 2px; }
+  #balls i { width: 6px; height: 6px; background: #1c1b19; }
+  #balls i.gone { background: transparent; box-shadow: inset 0 0 0 1px #b3afa7; }
+  #meta { color: var(--muted); }
+  .hud { position: fixed; left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right)); display: flex; justify-content: space-between; gap: 16px; pointer-events: none; }
+  #bottom { bottom: max(14px, env(safe-area-inset-bottom)); align-items: flex-end; }
+  #status { color: var(--muted); }
+  button { pointer-events: auto; font: inherit; color: var(--muted); background: none; border: 0; padding: 10px; margin: -10px; cursor: pointer; }
+  button:hover, button:focus-visible { color: var(--ink); }
+  .pop { position: fixed; z-index: 3; pointer-events: none; transform: translate(-50%, -100%); white-space: nowrap; font-weight: 600; color: #1c1b19;
+    text-shadow: 1px 0 #fff, -1px 0 #fff, 0 1px #fff, 0 -1px #fff, 1px 1px #fff, -1px -1px #fff; animation: pp-rise .9s ease-out forwards; }
+  .pop.perfect { color: var(--hot); }
+  .pop.smash { font-size: 15px; }
+  .pop.lob { color: #2f6f8f; }
+  .pop.gust { color: #b8332a; }
+  @keyframes pp-rise { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 -22px; } }
+  @media (prefers-reduced-motion: reduce) { .pop { animation-name: pp-fade; } }
+  @keyframes pp-fade { from { opacity: 1; } to { opacity: 0; } }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c" tabindex="0" aria-label="A beach. Your partner hits the ball to you; tap, click or press space as the ring closes to hit it back."></canvas></div>
+<div id="scores">
+  <div><b id="pts">0</b><span id="combo"></span></div>
+  <div id="balls"><i></i><i></i><i></i></div>
+  <div id="meta"></div>
+</div>
+<div class="hud" id="bottom">
+  <div id="status" role="status" aria-live="polite"></div>
+  <button id="mute" type="button" aria-pressed="false">sound on</button>
+</div>
+<script src="../shell.js"></script>
+<script>
+PixelPlays.mount({
+  id: 'frescobol',
+  music: false, // the sea is the soundtrack
+  credits: [
+    ['Engine by', 'AmirMushich', 'https://x.com/AmirMushich'],
+    ['Frescobol by', 'Peter Dirickson', 'https://peterwd.com'],
+  ],
+  rules: [
+    'Frescobol has no opponent. You and your partner keep the ball in the air together for as long as you can.',
+    'When the ball comes to you, a ring closes on the spot where it meets your paddle. Tap, click or press space as it closes.',
+    'Perfect timing builds your combo up to ×5. A loose hit resets it and sends a wild ball your partner may not reach.',
+    'Hold early and release as the ring closes to smash: double points and a faster ball, but your partner may miss it.',
+    'Double-tap before the ring closes to ready a lob: half points, but it calms the pace and your partner always reaches it.',
+    'Read the trail: white is a high lob, a short streak is a flat drive, red is a dipper that speeds up at the end.',
+    'Wind bends the ball and the flag warns before a gust. The tide comes in as you play. Three drops and the session is over.',
+  ],
+});
+</script>
+<script>window.PP_SCENE = { originY: 12, shadowX: .75, shadowY: -.5 };</script>
+<script src="../engine.js"></script>
+<script>
+'use strict';
+
+const LAND_X = 15.5, LAND_Y = 10.5, SHORE_Y = -4.3, TIDE_MAX = 1.7, BAND_Y = SHORE_Y + TIDE_MAX + 1.5, DUNE_X = -10.4;
+const TIDE_HITS = 160, SUNSET_HITS = 170, LOB_K = 1.45, LOB_COOL = 6, DOUBLE_TAP = .3, DIP_PUSH = 9;
+const CROWD_AT = [6, 11, 16, 22, 30, 40, 54];
+const PLAY_X = 5.6, REACH_F = 1.05, REACH_S = .45, CONTACT_Z = 1.55, PLANE_X = PLAY_X - REACH_F;
+const GRAVITY = 9, BALL_R = .16;
+const SLOW_T = 1.35, FAST_T = .62, PACE_HITS = 36, SMASH_K = .62, SERVE_T = 1.45;
+const WIN_OK = .15, WIN_GOOD = .085, WIN_PERFECT = .04, TIGHTEN = .78;
+const HOLD_SMASH = .2, LOCKOUT = .24, BALLS = 3, COMBO_MAX = 5, RING_SHOW = .95;
+const RUN_MAX = 11, WIND_MAX = 2.4, WIND_KMH = 9;
+const FLAG_X = 6.5, FLAG_Y = -2.6, FLAG_Z = 3.3;
+const TOWEL = { x0: 6.4, y0: 7, x1: 7.8, y1: 9 };
+const KIND_SAND = 1, KIND_SEA = 2;
+const BEST_KEY = 'pp-frescobol-best';
+
+const ME = { shirt: [238, 204, 52], stripe: [38, 132, 84], legs: [32, 84, 150], hair: [36, 28, 22], skin: [176, 120, 86], paddle: [36, 92, 160] };
+const MATE = { shirt: [240, 236, 226], stripe: [206, 70, 56], legs: [44, 44, 56], hair: [120, 72, 40], skin: [222, 170, 132], paddle: [176, 64, 42] };
+const LOCAL = { shirt: [110, 178, 188], stripe: [110, 178, 188], legs: [232, 222, 202], hair: [204, 196, 180], skin: [190, 140, 104] };
+// beachgoers who walk over once a rally gets going: where they stand, and where they walk in from
+const CROWD = [
+  { x: -1.8, y: 5.0, from: [-2.2, 9.6], shirt: [214, 170, 62], stripe: [214, 170, 62], legs: [196, 80, 70], hair: [60, 44, 34], skin: [150, 100, 70] },
+  { x: -3.4, y: 4.9, from: [-7.5, 9], shirt: [240, 236, 226], stripe: [40, 120, 170], legs: [40, 120, 170], hair: [30, 24, 22], skin: [222, 170, 132] },
+  { x: -0.2, y: 4.8, from: [0.6, 9.6], shirt: [168, 88, 104], stripe: [168, 88, 104], legs: [48, 47, 58], hair: [150, 120, 70], skin: [196, 146, 110] },
+  { x: -9.4, y: 3.2, from: [-14.4, 3.4], shirt: [96, 132, 112], stripe: [226, 228, 214], legs: [226, 222, 208], hair: [34, 28, 26], skin: [176, 120, 86] },
+  { x: 1.0, y: 4.6, from: [1.4, 9.6], shirt: [236, 120, 60], stripe: [236, 120, 60], legs: [54, 74, 92], hair: [92, 62, 40], skin: [222, 170, 132] },
+  { x: -2.6, y: 5.9, from: [-3.2, 9.6], shirt: [70, 96, 138], stripe: [240, 234, 218], legs: [60, 58, 64], hair: [200, 190, 170], skin: [190, 140, 104] },
+  { x: -0.9, y: 6.0, from: [0, 9.6], shirt: [226, 222, 208], stripe: [214, 64, 52], legs: [36, 84, 150], hair: [46, 36, 30], skin: [150, 100, 70] },
+];
+const DOG = [196, 138, 74], DOG_DARK = [120, 80, 46];
+const TORCHES = [[-1.9, 6.4], [8.6, 4.2], [-9, 1.4]];
+const GRIP = [64, 52, 44], BALL_COLOR = [250, 112, 64];
+const SAND = [[210, 182, 136], [219, 192, 145], [227, 201, 154], [234, 210, 164]];
+const WET = [[170, 144, 108], [180, 153, 116], [190, 163, 124], [199, 172, 132]];
+const SEA_SHALLOW = [[78, 164, 164], [96, 180, 172], [118, 196, 180]];
+const SEA_DEEP = [[36, 98, 128], [44, 114, 140], [54, 130, 150], [66, 146, 160]];
+const FOAM = rgb(246, 250, 244), FOAM_SOFT = rgb(212, 234, 226), GLINT = rgb(238, 248, 240);
+const HOT = rgb(232, 84, 40), DUST = rgb(240, 222, 186), SPRAY = rgb(226, 242, 238);
+const TRUNK = [150, 120, 84], TRUNK_RING = [118, 92, 64];
+const FROND = [[58, 104, 54], [86, 136, 64], [122, 162, 78], [176, 170, 96]];
+
+/* ---------- ground ---------- */
+const dyn = []; // shore and sea pixels, recoloured as the waves move
+function edgeCut(x, y, ix, iy) {
+  const edge = Math.pow(Math.pow(Math.abs(x) / LAND_X, 4) + Math.pow(Math.abs(y) / LAND_Y, 4), .25);
+  const rough = edge + (noise(x * 1.3, y * 1.3) - .5) * .1;
+  if (rough > 1.04) return true;
+  return rough > .94 && hash(ix, iy) < (rough - .94) / .1;
+}
+function sandColor(x, y, ix, iy) {
+  const fine = hash(ix, iy);
+  if (fine > .993) return rgb(248, 242, 228); // shell fragments
+  if (fine < .004) return rgb(150, 128, 100);
+  const ripple = Math.sin(x * .9 + y * 1.7 + noise(x * .35, y * .35) * 5) * .07;
+  const v = .5 + (noise(x * .55, y * .6) - .5) * .55 + ripple;
+  const k = clamp(Math.floor(v * 4 + (bayerAt(ix, iy) - .5) * .6), 0, 3);
+  // the sand darkens towards the waterline in a few dithered steps
+  const wet = Math.floor(clamp(1 - (y - SHORE_Y) / 3.4, 0, 1) * 3 + bayerAt(ix + 2, iy + 1) * .99) / 3;
+  const a = SAND[k], b = WET[k];
+  return rgb(lerp(a[0], b[0], wet), lerp(a[1], b[1], wet), lerp(a[2], b[2], wet));
+}
+function groundColor(x, y, ix, iy, i) {
+  if (edgeCut(x, y, ix, iy)) return 0;
+  if (y < BAND_Y) {
+    kinds[i] = KIND_SEA;
+    const dry = sandColor(x, y, ix, iy);
+    dyn.push({ i, x, y, ix, iy, dry });
+    return dry; // repainted by paintSea once the bake is done
+  }
+  if (x >= TOWEL.x0 && x <= TOWEL.x1 && y >= TOWEL.y0 && y <= TOWEL.y1) {
+    kinds[i] = KIND_SAND;
+    const stripe = Math.floor((y - TOWEL.y0) / .4) % 2, fringe = y - TOWEL.y0 < .08 || TOWEL.y1 - y < .08;
+    if (fringe && hash(ix, iy) > .4) return rgb(244, 238, 222);
+    return rampOf(stripe ? [46, 140, 84] : [246, 204, 46])[hash(ix, iy) > .85 ? 2 : 3];
+  }
+  const dune = x < DUNE_X + (noise(x * .4, y * .4) - .5) * 2.4 && y > -1.5;
+  kinds[i] = dune ? KIND_GRASS : KIND_SAND;
+  return sandColor(x, y, ix, iy);
+}
+function waterline(x, t) {
+  return SHORE_Y + G.tide + Math.sin(t * .5) * .55 + Math.sin(t * 1.25 + x * .23) * .16 + (noise(x * .3 + 9, t * .15) - .5) * .7;
+}
+function shadeOf(c, s) {
+  const k = s === 1 ? [.54, .52, .72] : [.36, .34, .56];
+  return rgb((c & 255) * k[0], (c >> 8 & 255) * k[1], (c >> 16 & 255) * k[2]);
+}
+function paintSea(t) {
+  for (const d of dyn) {
+    const line = waterline(d.x, t), depth = line - d.y;
+    let c;
+    if (depth > .2 + noise(d.x * 2, t * 2) * .15) {
+      if (depth < 1.6) {
+        const v = .5 + (noise(d.x * .8 + t * .4, d.y * 1.6) - .5) * .7 - depth * .15;
+        c = rgb(...SEA_SHALLOW[clamp(Math.floor(v * 3 + (bayerAt(d.ix, d.iy) - .5) * .6), 0, 2)]);
+      } else {
+        const v = .75 - Math.min(1, (depth - 1.6) / 5) * .6 + (noise(d.x * .5 - t * .2, d.y * 1.2 + t * .1) - .5) * .5;
+        c = rgb(...SEA_DEEP[clamp(Math.floor(v * 4 + (bayerAt(d.ix, d.iy) - .5) * .6), 0, 3)]);
+      }
+      // the soft line of the next wave, and sun glints
+      const crest = Math.sin(d.y * 2.2 - t * 1.6 + noise(d.x * .4, d.y * .4) * 4);
+      if (depth > 1 && crest > .985) c = FOAM_SOFT;
+      else if (noise(d.x * 2.6 + t * .9, d.y * 5 - t * .4) > .84 && hash(d.ix, d.iy) > .5) c = GLINT;
+    } else if (depth > 0) {
+      c = hash(d.ix + (t * 8 | 0), d.iy) > .25 ? FOAM : FOAM_SOFT;
+    } else if (depth > -.35) {
+      const p = d.dry; // freshly wet sand shines darker
+      c = rgb((p & 255) * .84, (p >> 8 & 255) * .84, (p >> 16 & 255) * .86);
+    } else c = d.dry;
+    const s = staticShadow[d.i];
+    if (s) c = shadeOf(c, s);
+    if (bakedZ[d.i] === groundZ[d.i]) bakedPix[d.i] = c;
+  }
+}
+function markSand(x, y) {
+  const p = project(x, y, 0), ix = p.sx | 0, iy = p.sy | 0;
+  for (let dx = 0; dx <= 1; dx++) {
+    const jx = ix + dx;
+    if (jx < 0 || iy < 0 || jx >= W || iy >= H) continue;
+    const i = iy * W + jx;
+    if (kinds[i] !== KIND_SAND || bakedZ[i] !== groundZ[i] || bakedPix[i] !== pristinePix[i]) continue;
+    const c = bakedPix[i];
+    bakedPix[i] = rgb((c & 255) * .88, (c >> 8 & 255) * .86, (c >> 16 & 255) * .86);
+  }
+}
+
+/* ---------- props ---------- */
+function growPalm(x, y, h, bend, dir, seed) {
+  const N = 16, pts = [];
+  for (let k = 0; k <= N; k++) {
+    const t = k / N, off = bend * t * t;
+    pts.push([x + Math.cos(dir) * off, y + Math.sin(dir) * off, t * h]);
+  }
+  const bark = z => (Math.floor(z * 3.6) % 2 ? TRUNK : TRUNK_RING);
+  for (let k = 0; k < N; k++) capsule(pts[k], pts[k + 1], lerp(.3, .16, k / N), lerp(.3, .16, (k + 1) / N), bark, 'rough');
+  for (let k = 0; k <= N; k += 2) castShadow(pts[k][0], pts[k][1], pts[k][2], .26);
+  const [tx, ty, tz] = pts[N];
+  for (let c = 0; c < 3; c++) sphere(tx + Math.cos(c * 2.1 + seed) * .2, ty + Math.sin(c * 2.1 + seed) * .2, tz - .22, .15, [104, 84, 46], 'solid');
+  const fronds = 9;
+  for (let f = 0; f < fronds; f++) {
+    const a = f / fronds * 6.283 + hash(seed, f) * .5, len = 2.2 + hash(seed + 1, f) * .8;
+    const droop = 1.5 + hash(seed + 2, f) * .7, lift = .7 + hash(seed + 3, f) * .4, ca = Math.cos(a), sa = Math.sin(a);
+    capture = [];
+    let mid = null;
+    for (let s = 1; s <= 14; s++) {
+      const t = s / 14, r = len * t, z = tz + lift * t - droop * t * t;
+      const px = tx + ca * r, py = ty + sa * r, w = .38 * Math.sin(Math.PI * Math.min(1, t * 1.2));
+      sphere(px, py, z, .09, FROND[0], 'solid');
+      for (const side of [-1, 1]) {
+        const tone = t > .82 ? FROND[3] : (s + side + f) % 3 ? FROND[2] : FROND[1];
+        sphere(px - sa * w * side, py + ca * w * side, z - .12 - w * .25, .12, tone, 'rough');
+      }
+      if (s === 7) mid = [px, py, z];
+      castShadow(px, py, z, .3 + w * .75, 1, .25);
+    }
+    // one leaf entry per frond, so each frond sways as a single piece
+    leaves.push({ x: mid[0], y: mid[1], z: mid[2], k: f * 2 + 1, r: .5, pixels: capture });
+    capture = null;
+  }
+}
+function umbrella(cx, cy, h, R) {
+  capsule([cx, cy, 0], [cx, cy, h + .12], .05, .05, () => [206, 202, 192], 'solid');
+  for (let z = 0; z < h; z += .12) castShadow(cx, cy, z, .08, 1, 0);
+  const red = rampOf([214, 64, 52]), white = rampOf([244, 238, 224]);
+  const L = [-.55, .37, .74], nl = Math.hypot(.4, 1);
+  for (let r = 0; r <= R; r += .033) {
+    const n = Math.max(6, Math.ceil(6.283 * r / .033));
+    for (let k = 0; k < n; k++) {
+      const a = k / n * 6.283, ca = Math.cos(a), sa = Math.sin(a);
+      const x = cx + ca * r, y = cy + sa * r, z = h + .25 - r * .4;
+      const l = clamp((ca * .4 * L[0] + sa * .4 * L[1] + L[2]) / nl, 0, 1);
+      const p = project(x, y, z), ramp = Math.floor(a / 6.283 * 10) % 2 ? red : white;
+      plot(x, y, z, ramp[clamp(Math.floor(l * 3.4 + .9 + (bayerAt(p.sx | 0, p.sy | 0) - .5) * .6), 0, 4)]);
+    }
+  }
+  castShadow(cx, cy, h - .05, R * .95);
+}
+function chair(x, y, color) {
+  const frame = [206, 206, 200];
+  for (const [dx, dy] of [[0, 0], [.64, 0], [0, .9], [.64, .9]]) box(x + dx, y + dy, 0, x + dx + .06, y + dy + .06, .36, frame, 2);
+  box(x, y, .34, x + .7, y + .96, .4, color, 5);
+  for (let k = 0; k < 7; k++) box(x, y + .9 + k * .07, .4 + k * .13, x + .7, y + .98 + k * .07, .53 + k * .13, color, 6 + k);
+  for (let k = 0; k < 4; k++) castShadow(x + .35, y + .25 * k + .1, .4, .42);
+  for (let k = 0; k < 4; k++) castShadow(x + .35, y + 1 + k * .1, .6 + k * .25, .38);
+}
+function props() {
+  growPalm(-12.2, 2.6, 5.6, 1.4, .25, 11);
+  growPalm(-10.4, 7.4, 4.7, 1.1, -.6, 37);
+  growPalm(12.8, -2.4, 5.2, 1.3, .3, 73);
+  umbrella(2.3, 7, 2.7, 1.85);
+  chair(3.1, 4.9, [44, 120, 170]);
+  chair(4.2, 5.2, [236, 120, 60]);
+
+  // cooler with a coconut on the lid
+  box(-1.5, 7.2, 0, -.8, 7.7, .5, [40, 110, 190], 21);
+  box(-1.53, 7.17, .5, -.77, 7.73, .58, [240, 240, 236], 22);
+  castShadow(-1.15, 7.45, .3, .5);
+  sphere(-1.1, 7.45, .74, .17, [112, 150, 62], 'rough');
+  capsule([-1.08, 7.45, .86], [-1.0, 7.4, 1.1], .025, .025, () => [240, 240, 232], 'solid');
+
+  // sandcastle
+  const castle = [214, 186, 140];
+  box(-4.6, 6.2, 0, -3.6, 7.2, .35, castle, 31);
+  for (const [dx, dy] of [[0, 0], [.74, 0], [0, .74], [.74, .74]]) box(-4.6 + dx, 6.2 + dy, .35, -4.34 + dx, 6.46 + dy, .7, castle, 32);
+  box(-4.3, 6.5, .35, -3.9, 6.9, 1, castle, 33);
+  capsule([-4.1, 6.7, 1], [-4.1, 6.7, 1.35], .02, .02, () => [120, 100, 80], 'solid');
+  for (let z = .1; z < .32; z += .07) plot(-4.06, 6.7, 1.35 - z * .4, rgb(214, 52, 44));
+  castShadow(-4.1, 6.7, .5, .7);
+
+  // surfboard stuck in the sand
+  box(-8.25, 4.2, 0, -8.1, 4.85, 2.3, [248, 210, 70], 41);
+  box(-8.26, 4.47, 0, -8.09, 4.58, 2.3, [214, 64, 52], 42);
+  for (let z = .2; z < 2.3; z += .3) castShadow(-8.18, 4.52, z, .3);
+
+  // flip-flops beside the towel
+  box(6.0, 8.2, 0, 6.12, 8.5, .04, [40, 120, 170], 51);
+  box(6.2, 8.25, 0, 6.32, 8.55, .04, [40, 120, 170], 52);
+
+  // bamboo torches, lit at dusk
+  for (const [x, y] of TORCHES) {
+    capsule([x, y, 0], [x, y, 1.7], .05, .045, () => [176, 146, 92], 'rough');
+    box(x - .09, y - .09, 1.7, x + .09, y + .09, 1.86, [92, 70, 52], 71);
+    for (let z = .1; z < 1.8; z += .15) castShadow(x, y, z, .07, 1, 0);
+  }
+
+  // lifeguard flag pole; the flag itself is drawn every frame
+  box(FLAG_X - .05, FLAG_Y - .05, 0, FLAG_X + .05, FLAG_Y + .05, FLAG_Z, [214, 214, 208], 61);
+  for (let z = .1; z < FLAG_Z; z += .12) castShadow(FLAG_X, FLAG_Y, z, .1, 1, 0);
+}
+function bake() {
+  zb.fill(-1e9);
+  pix.fill(rgb(255, 255, 255));
+  for (let iy = 0; iy < H; iy++) for (let ix = 0; ix < W; ix++) {
+    const g = unproject(ix + .5, iy + .5), i = iy * W + ix, c = groundColor(g.x, g.y, ix, iy, i);
+    if (!c) continue;
+    pix[i] = c; ground[i] = 1;
+    zb[i] = (g.x + g.y) / R2 * COS;
+  }
+  growGrass();
+  groundZ.set(zb);
+  props();
+  bakeOcclusion();
+  staticShadow.set(shadowMask);
+  applyShadows(groundZ);
+  bakedPix.set(pix);
+  bakedZ.set(zb);
+  paintSea(0);
+  pristinePix.set(bakedPix);
+}
+const pristinePix = new Uint32Array(W * H);
+
+/* ---------- game state ---------- */
+const G = {
+  phase: 'ready', time: 0, timer: 0, score: 0, best: 0, combo: 1, balls: BALLS, rally: 0, heat: 0, myHits: 0, longest: 0, firstRally: true,
+  ball: null, hold: null, lockout: 0, whiff: -9, tapAt: null, taps: [], lobReady: false,
+  spark: 0, sparkAt: null, dust: [], streaks: [], trail: [], cheer: 0, clap: 0, status: '', meta: '',
+  wind: { x: 0, y: 0 }, windBase: { x: 0, y: .6 }, windNow: { x: 0, y: .6 }, gust: null, nextGust: 18,
+  sessionHits: 0, tide: 0, lane: 0, sun: 0,
+  crowd: CROWD.map(c => ({ ...c, state: 'away', px: c.from[0], py: c.from[1], dir: 0, moved: 0 })),
+  dog: { state: 'off', x: -14.4, y: 3.8, tx: 0, ty: 0, dir: 0, speed: 5, moved: 0, carry: false, next: 22 },
+  who: [
+    { x: PLAY_X, y: 0, dir: Math.PI, swing: -1, smash: false, shot: 'normal', moved: 0, lunge: 0, step: 0 },
+    { x: -PLAY_X, y: 0, dir: 0, swing: -1, smash: false, shot: 'normal', moved: 0, lunge: 0, step: 0, fail: false },
+  ],
+};
+try { G.best = +localStorage.getItem(BEST_KEY) || 0; } catch { G.best = 0; }
+
+const nodes = {
+  pts: document.getElementById('pts'), combo: document.getElementById('combo'),
+  balls: [...document.querySelectorAll('#balls i')], meta: document.getElementById('meta'), status: document.getElementById('status'),
+};
+function renderHud() {
+  nodes.pts.textContent = G.score;
+  nodes.combo.textContent = G.combo > 1 ? '×' + G.combo : '';
+  nodes.balls.forEach((n, k) => n.classList.toggle('gone', k >= G.balls));
+}
+function windLabel() {
+  const w = G.windNow, s = Math.hypot(w.x, w.y);
+  const du = (w.x - w.y) / R2, dv = (w.x + w.y) / R2 * SIN;
+  const k = Math.round(Math.atan2(dv, du) / (Math.PI / 4));
+  return 'wind ' + Math.round(s * WIND_KMH) + ' km/h ' + ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'][(k + 8) % 8];
+}
+function renderMeta() {
+  const text = (G.best ? 'best ' + G.best + ' · ' : '') + windLabel();
+  if (text !== G.meta) { G.meta = text; nodes.meta.textContent = text; }
+}
+function setStatus(text) {
+  if (text === G.status) return;
+  G.status = text;
+  nodes.status.textContent = text;
+}
+// heat drives the pace: every shot adds one, a lob takes some back
+const pace = () => clamp(G.heat / PACE_HITS, 0, 1);
+// past full pace the squeeze keeps going slowly, so even a flawless rally ends eventually
+const overtime = () => clamp((G.heat - PACE_HITS) / 90, 0, 1);
+const tightness = () => lerp(1, TIGHTEN, pace()) * (1 - .3 * overtime());
+const flightT = () => lerp(SLOW_T, FAST_T, pace()) * (1 - .18 * overtime());
+const okWindow = () => WIN_OK * tightness();
+const charged = () => G.hold && G.time - G.hold.t0 >= HOLD_SMASH && G.phase === 'rally';
+const laneMin = () => G.lane - 4, laneMax = () => Math.min(G.lane + 4, 4.2);
+function pop(text, cls, x, y, z) {
+  const p = project(x, y, z), r = canvas.getBoundingClientRect(), k = r.width / W;
+  const el = document.createElement('div');
+  el.className = 'pop ' + cls;
+  el.textContent = text;
+  el.style.left = r.left + p.sx * k + 'px';
+  el.style.top = r.top + p.sy * k + 'px';
+  document.body.append(el);
+  setTimeout(() => el.remove(), 950);
+}
+
+/* ---------- wind ---------- */
+function newWind() {
+  const strength = WIND_MAX * Math.min(1, .12 + Math.random() * (.3 + .55 * pace()) + .3 * overtime());
+  const a = Math.PI / 2 + (Math.random() - .5) * 2.4; // mostly an onshore sea breeze
+  G.windBase = { x: Math.cos(a) * strength, y: Math.sin(a) * strength };
+}
+function stepWind(dt) {
+  const k = Math.min(1, dt * .6), w = G.windNow;
+  w.x = lerp(w.x, G.windBase.x, k); w.y = lerp(w.y, G.windBase.y, k);
+  // gusts swell and fade smoothly, so the ring stays honest while it speeds up or stalls
+  const gust = (noise(G.time * .45, 3.3) - .5) * 2, side = (noise(G.time * .3, 9.1) - .5) * 2;
+  G.wind.x = w.x * (1 + .6 * gust) - w.y * .25 * side;
+  G.wind.y = w.y * (1 + .6 * gust) + w.x * .25 * side;
+  // a big gust: the flag warns first, then it swells and fades over a couple of seconds
+  if (G.gust) {
+    const u = (G.time - G.gust.t0) / G.gust.dur;
+    if (u >= 1) G.gust = null;
+    else if (u > 0) { const e = Math.sin(Math.PI * u); G.wind.x += G.gust.x * e; G.wind.y += G.gust.y * e; }
+  } else if (G.phase === 'rally' && G.heat >= 6 && G.time > G.nextGust) {
+    const a = (Math.random() < .5 ? -1 : 1) * Math.PI / 2 + (Math.random() - .5) * .8, m = 1.6 + 1.2 * pace();
+    G.gust = { t0: G.time + 1.4, dur: 2.4, x: Math.cos(a) * m, y: Math.sin(a) * m };
+    G.nextGust = G.time + 14 + Math.random() * 12;
+    pop('gust', 'gust', FLAG_X, FLAG_Y, FLAG_Z + .7);
+    sound('whoosh');
+  }
+}
+const gustWarning = () => G.gust && G.time < G.gust.t0;
+
+/* ---------- flight ---------- */
+// time until the ball reaches the plane x = planeX under the current wind and spin, and where it will be
+function crossing(b, planeX) {
+  const a = .5 * (G.wind.x + (b.ax || 0)), v = b.vx, c = b.x - planeX;
+  let tau;
+  if (Math.abs(a) < 1e-5) tau = -c / v;
+  else {
+    const disc = v * v - 4 * a * c;
+    if (disc < 0) return null;
+    const s = Math.sqrt(disc), r1 = (-v - s) / (2 * a), r2 = (-v + s) / (2 * a);
+    tau = Math.min(r1 > 0 ? r1 : Infinity, r2 > 0 ? r2 : Infinity);
+  }
+  if (!(tau > 0) || !isFinite(tau)) return null;
+  return { tau, y: b.y + b.vy * tau + .5 * G.wind.y * tau * tau, z: b.z + b.vz * tau - .5 * GRAVITY * tau * tau };
+}
+// kind: normal, lob (high and slow), drive (flat and fast), dip (topspin: starts slow and speeds up)
+function launch(by, T, spread, kind = 'normal') {
+  const from = G.ball, recv = 1 - by, planeX = recv === 0 ? PLANE_X : -PLANE_X, R = G.who[recv];
+  const ty = clamp(G.lane + (R.y - G.lane) * .25 + (Math.random() - .5) * 2 * spread, G.lane - 3.2, Math.min(G.lane + 3.2, 3.6));
+  const tz = CONTACT_Z + (Math.random() - .5) * .5 - (kind === 'drive' ? .15 : 0);
+  const spin = kind === 'dip' ? (recv === 0 ? 1 : -1) * DIP_PUSH : 0;
+  const ax = G.wind.x * .5 + spin, ay = G.wind.y * .5; // the hitter reads half the wind, and all of its own spin
+  G.ball = {
+    x: from.x, y: from.y, z: from.z, by, t: 0, kind, ax: spin,
+    vx: (planeX - from.x - .5 * ax * T * T) / T,
+    vy: (ty - from.y - .5 * ay * T * T) / T,
+    vz: (tz - from.z + .5 * GRAVITY * T * T) / T,
+    tc: null, crossPt: null, hit: false, dead: false, landed: false, held: false,
+  };
+  G.rally++; G.heat++; G.sessionHits++;
+  G.longest = Math.max(G.longest, G.rally);
+  G.trail = [];
+  G.spark = .09; G.sparkAt = { x: from.x, y: from.y, z: from.z };
+}
+function contactError() {
+  const b = G.ball;
+  if (G.phase !== 'rally' || !b || b.by !== 1 || b.hit || b.dead) return null;
+  if (b.tc != null) return b.t - b.tc;
+  const c = crossing(b, PLANE_X);
+  return c ? -c.tau : null;
+}
+function hitMe(e, shot) {
+  const b = G.ball, me = G.who[0], tight = tightness(), ae = Math.abs(e);
+  const grade = ae <= WIN_PERFECT * tight ? 'perfect' : ae <= WIN_GOOD * tight ? 'good' : 'ok';
+  const smash = shot === 'smash', lob = shot === 'lob';
+  b.hit = true;
+  G.lobReady = false; G.tapAt = null;
+  // a lob holds the combo but never builds it
+  if (grade === 'ok') G.combo = 1;
+  else if (grade === 'perfect' && !lob) G.combo = Math.min(COMBO_MAX, G.combo + 1);
+  G.myHits++;
+  const pts = Math.max(1, Math.round((4 + G.myHits) * { perfect: 3, good: 2, ok: 1 }[grade] * G.combo * (smash ? 2 : lob ? .5 : 1)));
+  G.score += pts;
+  // the partner only drops what you make hard: a clean perfect, or any decent lob, is always returned
+  const gusty = Math.hypot(G.wind.x, G.wind.y) / WIND_MAX;
+  const miss = lob ? (grade === 'ok' ? .05 : 0)
+    : { perfect: 0, good: .015, ok: .14 }[grade] * (1 + pace()) + (grade === 'perfect' ? 0 : gusty * .04) + (smash ? .06 + pace() * .12 : 0);
+  G.who[1].fail = Math.random() < miss;
+  const base = flightT();
+  me.smash = smash; me.shot = lob ? 'lob' : 'normal'; me.swing = 0;
+  const T = smash ? base * SMASH_K : lob ? Math.max(base, .9) * LOB_K : base * (grade === 'ok' ? 1.12 : 1);
+  launch(0, T, lob ? .3 : { perfect: .25, good: .7, ok: 1.7 }[grade], smash ? 'drive' : lob ? 'lob' : 'normal');
+  if (lob) G.heat = Math.max(0, G.heat - LOB_COOL);
+  const label = smash ? 'smash' : lob ? 'lob' : grade === 'ok' ? 'loose' : grade;
+  pop(label + ' +' + pts, (grade === 'perfect' ? 'perfect' : '') + (smash ? ' smash' : ''), me.x, me.y, 3.2);
+  sound(smash ? 'smash' : 'hit', grade === 'perfect' ? 1 : .6);
+  if (grade === 'perfect') sound('ping', G.combo);
+  if (grade === 'perfect' && G.combo >= 3) G.clap = .7;
+  if (G.combo === COMBO_MAX && grade === 'perfect' && !lob) { G.cheer = 1.2; sound('cheer', .6); }
+  if (G.rally % 12 === 0) newWind();
+  setStatus('rally ' + G.rally);
+  renderHud();
+}
+function partnerHit() {
+  const bot = G.who[1], base = flightT(), p = pace(), r = Math.random();
+  // after your lob the partner plays it straight; otherwise the mix gets spicier with the pace
+  let kind = 'normal';
+  if (G.ball.kind !== 'lob') {
+    if (r < .12 + .08 * p) kind = 'lob';
+    else if (r < .2 + .22 * p) kind = 'drive';
+    else if (G.heat >= 8 && r < .23 + .37 * p) kind = 'dip';
+  }
+  const T = kind === 'lob' ? base * 1.35 : kind === 'drive' ? base * .8 : kind === 'dip' ? base * 1.02 : base * (.95 + Math.random() * .1);
+  bot.swing = 0; bot.smash = false; bot.shot = kind; bot.fail = false;
+  launch(1, T, .9 + p * .6, kind);
+  sound('hit', kind === 'drive' ? .9 : .5);
+  setStatus('rally ' + G.rally);
+}
+function partnerReach(b) {
+  const bot = G.who[1], gap = Math.abs(bot.y + REACH_S - b.y);
+  if (bot.fail || gap > 1 || b.z < .3) {
+    bot.lunge = .7;
+    b.dead = true;
+    return drop('partner could not reach it');
+  }
+  partnerHit();
+}
+function drop(text) {
+  if (G.phase !== 'rally') return;
+  G.balls--;
+  G.combo = 1;
+  G.hold = null; G.tapAt = null; G.lobReady = false;
+  G.timer = 0;
+  sound('drop');
+  if (G.dog.state === 'off' && Math.random() < .6) G.dog.state = 'waiting'; // the dog may come for the ball
+  if (G.balls > 0) {
+    G.phase = 'dropped';
+    setStatus(text + ' · ' + G.balls + (G.balls === 1 ? ' ball left' : ' balls left'));
+  } else {
+    G.phase = 'over';
+    const record = G.score > G.best;
+    if (record) { G.best = G.score; G.cheer = 2.4; sound('cheer', 1); try { localStorage.setItem(BEST_KEY, String(G.best)); } catch {} }
+    setStatus((record ? 'new best ' : 'session over · ') + G.score + ' pts · longest rally ' + G.longest + ' · tap to play again');
+  }
+  renderHud();
+}
+function lateReason() {
+  if (G.hold) return 'held too long';
+  if (G.time - G.whiff < .6) return 'swung too early';
+  return 'too late';
+}
+
+/* ---------- rallies ---------- */
+function startRally() {
+  G.rally = 0; G.heat = 0; G.myHits = 0; G.hold = null; G.lockout = 0; G.tapAt = null; G.lobReady = false;
+  G.who[1].fail = false;
+  newWind();
+  const bot = G.who[1], dog = G.dog;
+  G.ball = { x: bot.x + .55, y: bot.y + .45, z: 1.5, vx: 0, vy: 0, vz: 0, held: true, by: 1, t: 0, kind: 'normal' };
+  if (dog.state === 'waiting') dog.state = 'off';
+  else if (dog.state === 'fetch' || dog.state === 'sit') { dog.state = 'leave'; dog.tx = dog.x < 0 ? -14.4 : 14.4; dog.ty = dog.y; dog.speed = 3.2; }
+  G.phase = 'serve';
+  G.timer = 0;
+  setStatus(G.firstRally ? 'tap as the ring closes' : '');
+  G.firstRally = false;
+  renderHud();
+}
+function resetGame() {
+  G.score = 0; G.balls = BALLS; G.longest = 0; G.combo = 1; G.sessionHits = 0;
+  bakedPix.set(pristinePix);
+  seaStep = -1;
+  startRally();
+}
+
+/* ---------- input ---------- */
+function whiff(lock) {
+  const me = G.who[0];
+  me.swing = 0; me.smash = false; me.shot = 'normal';
+  G.lockout = lock; G.whiff = G.time; G.tapAt = null; G.lobReady = false;
+  sound('whiff');
+}
+function press() {
+  ensureAudio();
+  if (G.phase === 'ready') return startRally();
+  if (G.phase === 'over') { if (G.timer > .8) resetGame(); return; }
+  if (G.phase === 'dropped') { if (G.timer > .5) startRally(); return; }
+  if (G.lockout > 0 || G.hold) return;
+  G.taps = G.taps.filter(t => G.time - t < .5);
+  G.taps.push(G.time);
+  const e = contactError(), win = okWindow();
+  if (e != null && Math.abs(e) <= win) return hitMe(e, G.lobReady ? 'lob' : 'normal');
+  if (e != null && e > win) return;
+  if (G.taps.length >= 3) return whiff(.5); // mashing never works
+  if (G.tapAt != null && G.time - G.tapAt < DOUBLE_TAP && !G.lobReady) {
+    G.tapAt = null;
+    G.lobReady = true;
+    const me = G.who[0];
+    pop('lob ready', 'lob', me.x, me.y, 3.2);
+    sound('arm');
+    return;
+  }
+  G.hold = { t0: G.time }; // contact happens on release: hold early to smash
+}
+function release() {
+  if (!G.hold) return;
+  const held = G.time - G.hold.t0;
+  G.hold = null;
+  if (G.phase !== 'rally' && G.phase !== 'serve') return;
+  const e = contactError();
+  if (e != null && Math.abs(e) <= okWindow()) return hitMe(e, held >= HOLD_SMASH ? 'smash' : G.lobReady ? 'lob' : 'normal');
+  if (held < HOLD_SMASH) { G.tapAt = G.time; return; } // maybe the first half of a double-tap; judged in update
+  whiff(LOCKOUT); // swung at air
+}
+
+/* ---------- physics ---------- */
+function puff(b, wet) {
+  for (let k = 0; k < (wet ? 10 : 7); k++) {
+    G.dust.push({ x: b.x, y: b.y, z: .1, vx: (Math.random() - .5) * 2.2, vy: (Math.random() - .5) * 2.2, vz: 1.2 + Math.random() * (wet ? 2.4 : 1.2), life: wet ? .5 : .35, wet });
+  }
+}
+function stepBall(b, dt) {
+  if (b.held || b.carried) return;
+  const px = b.x, air = b.z > BALL_R + .001 || b.vz > 0;
+  const ax = air ? G.wind.x + (b.ax || 0) : 0, ay = air ? G.wind.y : 0;
+  b.x += b.vx * dt + .5 * ax * dt * dt; b.vx += ax * dt;
+  b.y += b.vy * dt + .5 * ay * dt * dt; b.vy += ay * dt;
+  b.z += b.vz * dt - .5 * GRAVITY * dt * dt; b.vz -= GRAVITY * dt;
+  b.t += dt;
+  if (G.phase === 'rally' && !b.hit && !b.dead && b.tc == null) {
+    const recv = 1 - b.by, planeX = recv === 0 ? PLANE_X : -PLANE_X;
+    if (px !== b.x && (px - planeX) * (b.x - planeX) <= 0) {
+      b.tc = b.t - dt * (b.x - planeX) / (b.x - px);
+      b.crossPt = { x: planeX, y: b.y, z: b.z };
+      if (recv === 1) return partnerReach(b);
+    }
+  }
+  if (b.z <= BALL_R) {
+    b.z = BALL_R;
+    const wet = b.y < waterline(b.x, G.time);
+    if (!b.dead && G.phase === 'rally') {
+      b.dead = true;
+      drop(b.tc == null ? 'it fell short' : b.by === 1 ? lateReason() : 'partner could not reach it');
+    }
+    if (!b.landed) {
+      b.landed = true;
+      b.wet = wet;
+      puff(b, wet);
+      sound(wet ? 'splash' : 'thud');
+      if (!wet) { markSand(b.x, b.y); markSand(b.x + .1, b.y + .1); }
+    }
+    b.ax = 0;
+    if (wet) { b.vz = 0; b.vx *= .92; b.vy *= .92; }
+    else if (b.vz < -1.2) { b.vz *= -.35; b.vx *= .6; b.vy *= .6; } // sand eats the bounce
+    else {
+      b.vz = 0;
+      const sp = Math.hypot(b.vx, b.vy), next = Math.max(0, sp - 6 * dt);
+      if (sp > 0) { b.vx *= next / sp; b.vy *= next / sp; }
+    }
+  }
+  if (Math.abs(b.x) > 13.6) { b.x = Math.sign(b.x) * 13.6; b.vx *= -.25; }
+  if (Math.abs(b.y) > 9.2) { b.y = Math.sign(b.y) * 9.2; b.vy *= -.25; }
+}
+function moveY(p, ty, speed, dt) {
+  const d = ty - p.y, step = Math.min(Math.abs(d), speed * dt);
+  p.y += Math.sign(d) * step;
+  p.moved = dt > 0 ? step / dt : 0;
+}
+function walk(p, tx, ty, speed, dt) {
+  const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy), step = Math.min(d, speed * dt);
+  if (d > .01) { p.x += dx / d * step; p.y += dy / d * step; p.dir = Math.atan2(dy, dx); }
+  p.moved = dt > 0 ? step / dt : 0;
+  return d - step;
+}
+// beachgoers drift over as the rally grows, and drift away when it ends
+function stepCrowd(dt) {
+  const n = CROWD_AT.filter(v => G.rally >= v).length;
+  G.crowd.forEach((c, k) => {
+    if (k < n && c.state === 'away') c.state = 'in';
+    if (k >= n && c.state === 'in') c.state = 'out';
+    if (c.state === 'away') return;
+    const at = { x: c.px, y: c.py, dir: c.dir, moved: 0 };
+    const left = c.state === 'in' ? walk(at, c.x, c.y, 2.6, dt) : walk(at, c.from[0], c.from[1], 2.2, dt);
+    c.px = at.x; c.py = at.y; c.dir = at.dir; c.moved = at.moved;
+    if (c.state === 'out' && left < .05) c.state = 'away';
+  });
+}
+function stepDog(dt) {
+  const d = G.dog, b = G.ball;
+  if (d.state === 'off') {
+    if (G.phase === 'rally' && G.time > d.next) {
+      const fromLeft = Math.random() < .5;
+      d.state = 'cross'; d.x = fromLeft ? -14.4 : 14.4; d.y = clamp(G.lane + 3.6, 2.6, 4.1);
+      d.tx = -d.x; d.ty = d.y; d.speed = 5.5;
+      d.next = G.time + 30 + Math.random() * 30;
+      sound('bark');
+    }
+    return;
+  }
+  if (d.state === 'waiting') {
+    if (!b || !b.landed) return;
+    if (b.wet) { d.state = 'off'; return; } // not into the sea
+    d.state = 'fetch'; d.x = b.x < 0 ? -14.4 : 14.4; d.y = clamp(b.y, -1, 8); d.speed = 6.5;
+    sound('bark');
+  }
+  if (d.state === 'fetch') { d.tx = b.x - Math.cos(d.dir) * .7; d.ty = b.y - Math.sin(d.dir) * .7; }
+  if (d.state === 'sit') { d.moved = 0; return; }
+  const left = walk(d, d.tx, d.ty, d.speed, dt);
+  if (left > .05) return;
+  if (d.state === 'fetch') { d.state = 'sit'; d.carry = true; b.carried = true; b.hidden = true; sound('bark'); }
+  else { d.state = 'off'; d.carry = false; }
+}
+function update(dt) {
+  G.time += dt;
+  G.timer += dt;
+  G.lockout = Math.max(0, G.lockout - dt);
+  G.spark = Math.max(0, G.spark - dt);
+  G.cheer = Math.max(0, G.cheer - dt);
+  G.clap = Math.max(0, G.clap - dt);
+  stepWind(dt);
+  if (G.tapAt != null && G.time - G.tapAt >= DOUBLE_TAP) {
+    G.tapAt = null;
+    if (G.phase === 'rally' || G.phase === 'serve') whiff(LOCKOUT);
+  }
+  // the tide comes in over a session and the players give it the ground; the sun goes down with it
+  G.tide = lerp(G.tide, TIDE_MAX * clamp(G.sessionHits / TIDE_HITS, 0, 1), Math.min(1, dt * .3));
+  G.lane = G.tide;
+  G.sun = lerp(G.sun, clamp(G.sessionHits / SUNSET_HITS, 0, 1), Math.min(1, dt * .25));
+  const me = G.who[0], bot = G.who[1];
+  for (const p of G.who) {
+    if (p.swing >= 0) { p.swing += dt / (p.smash ? .3 : .24); if (p.swing >= 1) { p.swing = -1; p.smash = false; } }
+    p.lunge = Math.max(0, p.lunge - dt);
+  }
+  for (const d of G.dust) { d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt; d.vz -= 8 * dt; d.life -= dt; }
+  if (G.dust.length) G.dust = G.dust.filter(d => d.life > 0 && d.z > 0);
+  const ws = Math.hypot(G.wind.x, G.wind.y) * (gustWarning() ? 2.5 : 1);
+  if (!STILL && Math.random() < ws * dt * 5) G.streaks.push({ x: -14 + Math.random() * 28, y: -2.4 + Math.random() * 11, life: .7 + Math.random() * .5 });
+  for (const s of G.streaks) { s.x += G.wind.x * 2.4 * dt; s.y += G.wind.y * 2.4 * dt; s.life -= dt; }
+  if (G.streaks.length) G.streaks = G.streaks.filter(s => s.life > 0);
+
+  const b = G.ball;
+  if (G.phase === 'serve') {
+    moveY(me, G.lane, 3, dt); moveY(bot, G.lane, 3, dt);
+    b.x = bot.x + .55; b.y = bot.y + .45; b.z = 1.5;
+    if (G.timer > .9) { bot.swing = 0; bot.shot = 'normal'; launch(1, SERVE_T, .4); G.phase = 'rally'; sound('hit', .4); }
+  } else if (G.phase === 'rally' && b && !b.hit && !b.dead) {
+    const recv = 1 - b.by, P = G.who[recv], hitter = G.who[b.by], planeX = recv === 0 ? PLANE_X : -PLANE_X;
+    if (b.tc == null) {
+      const c = crossing(b, planeX);
+      if (c) {
+        const ty = clamp(c.y + (recv === 0 ? REACH_S : -REACH_S), laneMin(), laneMax());
+        let speed = Math.min(RUN_MAX, Math.abs(ty - P.y) / Math.max(.06, c.tau - .08));
+        if (recv === 1 && P.fail) speed *= .45;
+        moveY(P, ty, speed, dt);
+      }
+    } else if (recv === 0 && b.t - b.tc > okWindow()) {
+      b.dead = true;
+      drop(lateReason());
+    }
+    moveY(hitter, G.lane + (hitter.y - G.lane) * .5, 1.2, dt);
+  } else {
+    if (G.phase === 'dropped' && G.timer > 1.9) startRally();
+    moveY(me, me.y, 0, dt); moveY(bot, bot.y, 0, dt);
+  }
+  for (const p of G.who) {
+    if (p.moved > 1) {
+      p.step += dt;
+      if (p.step > .15) { p.step = 0; p.foot = !p.foot; markSand(p.x, p.y + (p.foot ? .2 : -.2)); }
+    }
+  }
+  if (G.ball && !G.ball.held) for (let k = 0; k < 4; k++) stepBall(G.ball, dt / 4);
+  const nb = G.ball;
+  if (nb && !nb.held && !nb.landed && !nb.dead) { G.trail.push([nb.x, nb.y, nb.z]); if (G.trail.length > 9) G.trail.shift(); }
+  stepCrowd(dt);
+  stepDog(dt);
+  renderMeta();
+}
+
+/* ---------- drawing ---------- */
+function beachAdd(pal) {
+  // barefoot, in shorts: the engine's figure wears shoes and long trousers by default
+  return (a, b, r0, r1, f) => dynamicAdd(a, b, r0, r1, z => {
+    const c = f(z);
+    if (c === SHOE) return pal.skin;
+    if (c === pal.legs && z < .8) return pal.skin;
+    return c;
+  });
+}
+function poseOf(p, i) {
+  const running = p.moved > 1.4;
+  const stride = running ? .14 + Math.sin(G.time * 15 + i * 2) * .2 : .2;
+  const base = { crouch: running ? .16 : .22, lean: .12, stance: stride, armL: .45, armR: .75 };
+  if (p.swing >= 0) {
+    const t = ease(p.swing);
+    if (p.smash) return { pose: { ...base, crouch: .3, lean: lerp(-.05, .3, t), armR: lerp(-1.3, 2.4, t), armL: lerp(1, .2, t) }, twist: lerp(1, -.6, t) };
+    // each shot has its own swing, so the partner's tells start before the trail does
+    if (p.shot === 'lob') return { pose: { ...base, crouch: .34, lean: lerp(.25, -.1, t), armR: lerp(-.5, 1.1, t), armL: lerp(.6, .9, t) }, twist: lerp(.3, -.1, t) };
+    if (p.shot === 'drive') return { pose: { ...base, crouch: .24, armR: lerp(-.6, 1.9, t), armL: lerp(1.1, .1, t) }, twist: lerp(.95, -.7, t) };
+    if (p.shot === 'dip') return { pose: { ...base, crouch: .3, lean: .25, armR: lerp(.2, 2.3, t), armL: lerp(.8, .3, t) }, twist: lerp(.6, -.45, t) };
+    return { pose: { ...base, crouch: .26, armR: lerp(-.2, 1.7, t), armL: lerp(.8, .3, t) }, twist: lerp(.55, -.35, t) };
+  }
+  if (p.lunge > 0) return { pose: { crouch: .55, lean: .55, stance: .55, armR: 1.5, armL: .2 }, twist: .4 };
+  if (i === 0 && charged()) return { pose: { ...base, crouch: .3, armR: -1.2, armL: 1 }, twist: .9 };
+  if (i === 0 && G.lobReady) return { pose: { ...base, crouch: .36, armR: -.2, armL: .8 }, twist: .2 };
+  const b = G.ball;
+  if ((G.phase === 'rally' && b && !b.hit && !b.dead && b.by === 1 - i) || (G.phase === 'serve' && i === 0)) {
+    return { pose: { ...base, crouch: .26, armR: .5, armL: .7 }, twist: .45 };
+  }
+  if (G.phase === 'serve' && i === 1) return { pose: { ...base, armR: .9, armL: .6 }, twist: 0 };
+  return { pose: base, twist: 0 };
+}
+function drawPlayer(i) {
+  const p = G.who[i], pal = i ? MATE : ME;
+  const { pose, twist } = poseOf(p, i);
+  const yaw = p.dir + twist * (i === 0 ? 1 : -1);
+  const hand = figure(p.x, p.y, yaw, pose, pal, beachAdd(pal));
+  const a = (pose.armR || 0) + .18, fx = Math.cos(yaw), fy = Math.sin(yaw);
+  const dx = fx * Math.sin(a) - fy * .2, dy = fy * Math.sin(a) + fx * .2, dz = -Math.cos(a);
+  const neck = [hand[0] + dx * .14, hand[1] + dy * .14, hand[2] + dz * .14];
+  const head = [hand[0] + dx * .36, hand[1] + dy * .36, hand[2] + dz * .36];
+  dynamicAdd(hand, neck, .05, .05, () => GRIP);
+  dynamicAdd(head, head, .21, .21, () => pal.paddle);
+  return head;
+}
+const watchYaw = (x, y) => {
+  const b = G.ball, bx = b ? b.x : 0, by = b ? b.y : G.lane;
+  return Math.round(Math.atan2(by - y, bx - x) / .35) * .35; // heads turn in coarse steps
+};
+function cheerArms(k) {
+  const beat = Math.floor(G.time * 8 + k * 1.3) % 2;
+  if (G.cheer > 0) return { armR: beat ? 2.9 : 2.5, armL: beat ? 2.5 : 2.9 };
+  if (G.clap > 0) return { armR: beat ? 1.5 : 1.15, armL: beat ? 1.5 : 1.15 };
+  return null;
+}
+function drawLocal() {
+  const L = { x: 5.6, y: 6 };
+  const hand = figure(L.x, L.y, watchYaw(L.x, L.y), { scale: .9, stance: .08, ...(cheerArms(9) || { armR: 1.1, armL: .1 }) }, LOCAL, beachAdd(LOCAL));
+  sphere(hand[0], hand[1], hand[2] + .1, .14, [112, 150, 62], 'solid');
+}
+function drawCrowd() {
+  G.crowd.forEach((c, k) => {
+    if (c.state === 'away') return;
+    const walking = c.moved > .3;
+    const pose = walking
+      ? { scale: .88, stance: .1 + Math.sin(G.time * 11 + k) * .2, armR: Math.sin(G.time * 11 + k) * .3, armL: -Math.sin(G.time * 11 + k) * .3 }
+      : { scale: .88, stance: .07, ...(cheerArms(k) || { armR: .1, armL: .12 }) };
+    figure(c.px, c.py, walking ? c.dir : watchYaw(c.px, c.py), pose, c, beachAdd(c));
+  });
+}
+function drawDog() {
+  const d = G.dog;
+  if (d.state === 'off' || d.state === 'waiting') return;
+  const fx = Math.cos(d.dir), fy = Math.sin(d.dir), run = d.moved > .5, t = G.time * 16;
+  const P = (a, b, z) => [d.x + fx * a - fy * b, d.y + fy * a + fx * b, z];
+  const coat = () => DOG, dark = () => DOG_DARK;
+  dynamicAdd(P(-.32, 0, .44), P(.28, 0, .47), .19, .2, coat);
+  for (const [a, b, ph] of [[.22, .12, 0], [.22, -.12, Math.PI], [-.28, .12, Math.PI], [-.28, -.12, 0]]) {
+    const swing = run ? Math.sin(t + ph) * .2 : 0;
+    dynamicAdd(P(a, b, .36), P(a + swing, b, .05), .06, .05, coat);
+  }
+  const hz = d.state === 'sit' ? .74 : run ? .64 : .7;
+  dynamicAdd(P(.4, 0, .5), P(.5, 0, hz), .1, .1, coat);
+  dynamicAdd(P(.55, 0, hz), P(.55, 0, hz), .16, .16, coat);
+  dynamicAdd(P(.72, 0, hz - .05), P(.72, 0, hz - .05), .08, .08, dark);
+  for (const s of [-1, 1]) dynamicAdd(P(.5, s * .11, hz + .1), P(.47, s * .14, hz - .02), .05, .04, dark);
+  const wag = Math.sin(G.time * (run ? 22 : 12)) * .16;
+  dynamicAdd(P(-.5, 0, .5), P(-.74, wag, .8), .04, .03, coat);
+  if (d.carry) { const m = P(.82, 0, hz - .08); sphere(m[0], m[1], m[2], BALL_R, BALL_COLOR, 'gloss'); }
+}
+function drawSwimmer(t) {
+  const x = -2.5, y = -7, z = .04 + Math.sin(t * 1.7) * .05;
+  if (y > waterline(x, t) - .5) return;
+  sphere(x, y, z - .18, .28, [196, 146, 110], 'solid');
+  sphere(x, y, z + .16, .2, [196, 146, 110], 'solid');
+  sphere(x - .04, y - .04, z + .24, .18, [40, 30, 26], 'solid');
+}
+function swimmerRipple(t) {
+  const p = project(-2.5, -7, 0), r = 5 + (t * 3 % 3), dots = [];
+  for (let a = 0; a < 6.283; a += .45) dots.push([p.sx + Math.cos(a) * r, p.sy + Math.sin(a) * r * .5]);
+  drawDots(dots, FOAM_SOFT);
+}
+function drawFlag(t) {
+  const w = G.wind, warn = gustWarning(), s = warn ? 1 : Math.min(1, Math.hypot(w.x, w.y) / WIND_MAX);
+  const ang = warn ? Math.atan2(G.gust.y, G.gust.x) : Math.atan2(w.y, w.x), cx = Math.cos(ang), cy = Math.sin(ang);
+  const red = rampOf([214, 52, 44]), yellow = rampOf([248, 206, 52]);
+  const len = .5 + .7 * s, tall = .62, speed = (5 + 8 * s) * (warn ? 2.2 : 1);
+  for (let u = 0; u <= len; u += .035) {
+    const phase = u * 5 - t * speed, wave = Math.sin(phase) * (warn ? .2 : .12) * (u / len), sag = (1 - s) * u * .55;
+    const light = clamp(Math.round(3 + Math.cos(phase) * .9 * (u / len)), 1, 4);
+    for (let v = 0; v <= tall; v += .035) {
+      plot(FLAG_X + cx * u - cy * wave, FLAG_Y + cy * u + cx * wave, FLAG_Z - .05 - v - sag, (v < tall / 2 ? red : yellow)[light]);
+    }
+  }
+}
+// what the ball's trail says about the shot: white dots for a lob, an ink streak for a drive, red for a dipper
+function drawTrail() {
+  const b = G.ball;
+  if (!b || b.held || b.landed || b.kind === 'normal' || !b.kind || G.trail.length < 2) return;
+  const n = b.kind === 'drive' ? 4 : G.trail.length, pts = [];
+  for (let k = Math.max(0, G.trail.length - n); k < G.trail.length - 1; k++) {
+    if (b.kind === 'lob' && k % 2) continue;
+    const q = project(...G.trail[k]);
+    pts.push([q.sx, q.sy]);
+  }
+  drawDots(pts, b.kind === 'lob' ? PAPER : b.kind === 'dip' ? HOT : INK);
+}
+// golden hour, then dusk: the whole diorama is graded, the white page around it stays white
+function gradeLight() {
+  const s = G.sun;
+  if (s < .02) return;
+  const gold = clamp(s / .6, 0, 1), dusk = clamp((s - .6) / .4, 0, 1);
+  const kr = lerp(lerp(1, 1.06, gold), .8, dusk), kg = lerp(lerp(1, .9, gold), .64, dusk), kb = lerp(lerp(1, .76, gold), .8, dusk);
+  for (let i = 0; i < pix.length; i++) {
+    if (zb[i] < -1e8) continue;
+    const c = pix[i];
+    pix[i] = rgb((c & 255) * kr, (c >> 8 & 255) * kg, (c >> 16 & 255) * kb);
+  }
+}
+function torchLight() {
+  const on = clamp((G.sun - .55) / .25, 0, 1);
+  if (!on) return;
+  for (const [x, y] of TORCHES) {
+    const g = project(x, y, 0);
+    for (let dy = -9; dy <= 9; dy++) for (let dx = -18; dx <= 18; dx++) {
+      const ix = Math.round(g.sx) + dx, iy = Math.round(g.sy) + dy;
+      if (ix < 0 || iy < 0 || ix >= W || iy >= H) continue;
+      const i = iy * W + ix, d = (dx / 18) ** 2 + (dy / 9) ** 2;
+      if (d >= 1 || zb[i] < -1e8 || (1 - d) * on * .9 < bayerAt(ix, iy)) continue;
+      const c = pix[i];
+      pix[i] = rgb((c & 255) * 1.2 + 24, (c >> 8 & 255) * 1.06 + 10, (c >> 16 & 255) * .88);
+    }
+    const f = project(x, y, 1.9), fl = Math.floor(G.time * 12 + x) % 3;
+    const core = [[0, 0], [0, -1], [-1, 0], [1, 0], [0, -2 - (fl === 1)]], rim = [[-1, -1], [1, -1], [0, -3 - fl % 2], [-1, -2], [1, -2]];
+    if (on > .5) drawDots(rim.map(([a, b]) => [f.sx + a, f.sy + b]), rgb(240, 110, 40));
+    drawDots(core.map(([a, b]) => [f.sx + a, f.sy + b]), rgb(255, 214, 90));
+  }
+}
+function ringDots(cx, cy, r) {
+  const pts = [], n = Math.max(12, Math.ceil(r * 6.6));
+  for (let k = 0; k < n; k++) { const a = k / n * 6.283; pts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  return pts;
+}
+function drawRing() {
+  const b = G.ball;
+  if (G.phase !== 'rally' || !b || b.by !== 1 || b.hit || b.dead) return;
+  let pt, ttc;
+  if (b.tc == null) {
+    const c = crossing(b, PLANE_X);
+    if (!c) return;
+    pt = { x: PLANE_X, y: c.y, z: Math.max(.25, c.z) }; ttc = c.tau;
+  } else { pt = b.crossPt; ttc = 0; }
+  if (ttc > RING_SHOW) return;
+  const p = project(pt.x, pt.y, pt.z), r0 = 4, r = r0 + ttc * 30;
+  drawDots(ringDots(p.sx, p.sy, r + 1), INK);
+  drawDots(ringDots(p.sx, p.sy, r), charged() ? HOT : G.lobReady ? PAPER : SIGNAL);
+  drawDots(ringDots(p.sx, p.sy, r0 + 1), PAPER);
+  drawDots(ringDots(p.sx, p.sy, r0), INK);
+}
+function draw() {
+  const windT = STILL ? 0 : Math.floor(G.time * WIND_FPS) / WIND_FPS;
+  const step = Math.round(windT * WIND_FPS);
+  if (step !== seaStep) { seaStep = step; paintSea(windT); }
+  pix.set(bakedPix);
+  zb.set(bakedZ);
+  pendingShadows.length = 0;
+  drawLocal();
+  drawCrowd();
+  drawDog();
+  drawSwimmer(windT);
+  drawPlayer(1);
+  const paddle = drawPlayer(0);
+  const b = G.ball;
+  if (b && !b.hidden) {
+    sphere(b.x, b.y, b.z, BALL_R, BALL_COLOR, 'gloss');
+    castShadow(b.x, b.y, b.z - BALL_R, BALL_R * .96, 1, 0);
+    if (b.z < BALL_R + .3) castShadow(b.x, b.y, 0, BALL_R * .8, 2, 0);
+  }
+  drawFlag(STILL ? 0 : Math.floor(G.time * 12) / 12);
+  drawLeaves(windT);
+  drawTufts(windT);
+  flushShadows();
+  applyShadows(bakedZ);
+  shadeEdges();
+  gradeLight();
+  torchLight();
+  swimmerRipple(windT);
+  const sand = [], spray = [];
+  for (const d of G.dust) { const q = project(d.x, d.y, d.z); (d.wet ? spray : sand).push([q.sx, q.sy]); }
+  drawDots(sand, DUST);
+  drawDots(spray, SPRAY);
+  const streaks = [];
+  for (const s of G.streaks) {
+    const q = project(s.x, s.y, .05), ix = q.sx | 0, iy = q.sy | 0;
+    if (ix < 1 || iy < 0 || ix >= W - 1 || iy >= H) continue;
+    const kind = kinds[iy * W + ix];
+    if (kind !== KIND_SAND && kind !== KIND_GRASS) continue;
+    const t = project(s.x - G.wind.x * .25, s.y - G.wind.y * .25, .05);
+    streaks.push([q.sx, q.sy], [(q.sx + t.sx) / 2, (q.sy + t.sy) / 2]);
+  }
+  drawDots(streaks, DUST);
+  drawTrail();
+  if (G.spark > 0 && G.sparkAt) {
+    const q = project(G.sparkAt.x, G.sparkAt.y, G.sparkAt.z), dots = [];
+    for (const r of [3, 4]) dots.push([q.sx - r, q.sy], [q.sx + r, q.sy], [q.sx, q.sy - r], [q.sx, q.sy + r]);
+    drawDots(dots, PAPER);
+  }
+  if ((charged() || G.lobReady) && Math.floor(G.time * 10) % 2) {
+    const q = project(...paddle);
+    drawDots(ringDots(q.sx, q.sy, 3.5), charged() ? HOT : PAPER);
+  }
+  drawRing();
+  ctx.putImageData(image, 0, 0);
+}
+let seaStep = -1;
+
+/* ---------- input wiring ---------- */
+canvas.addEventListener('pointerdown', e => {
+  canvas.focus({ preventScroll: true });
+  e.preventDefault();
+  press();
+});
+addEventListener('pointerup', release);
+addEventListener('pointercancel', release);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('keydown', e => {
+  if (e.key !== ' ' && e.key !== 'Enter') return;
+  e.preventDefault();
+  if (!e.repeat) press();
+});
+canvas.addEventListener('keyup', e => {
+  if (e.key !== ' ' && e.key !== 'Enter') return;
+  e.preventDefault();
+  release();
+});
+addEventListener('blur', () => { G.hold = null; });
+
+/* ---------- sound ---------- */
+let audio = null, master = null, muted = false, noiseBuffer = null;
+const layers = []; // surdo, tamborim, agogô, ganzá: one more joins at each combo step from ×2
+function ensureAudio() {
+  if (audio) { if (audio.state === 'suspended') audio.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio = new AC();
+  master = audio.createGain();
+  master.gain.value = muted ? 0 : 1;
+  master.connect(audio.destination);
+  noiseBuffer = audio.createBuffer(1, audio.sampleRate * 2, audio.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  // surf: looping noise through a low-pass, swelling slowly like waves arriving
+  const surf = audio.createBufferSource(), low = audio.createBiquadFilter(), swell = audio.createGain();
+  const lfo = audio.createOscillator(), depth = audio.createGain();
+  surf.buffer = noiseBuffer; surf.loop = true;
+  low.type = 'lowpass'; low.frequency.value = 620;
+  swell.gain.value = .05;
+  lfo.frequency.value = .09; depth.gain.value = .035;
+  lfo.connect(depth).connect(swell.gain);
+  surf.connect(low).connect(swell).connect(master);
+  surf.start(); lfo.start();
+  for (let k = 0; k < 4; k++) { const g = audio.createGain(); g.gain.value = 0; g.connect(master); layers.push(g); }
+  samba.next = audio.currentTime + .1;
+  setInterval(samba, 25);
+}
+function burst(at, length, level, freq, type = 'bandpass', dest = master) {
+  const src = audio.createBufferSource(), gain = audio.createGain(), filter = audio.createBiquadFilter();
+  src.buffer = noiseBuffer;
+  filter.type = type; filter.frequency.value = freq; filter.Q.value = .8;
+  gain.gain.setValueAtTime(level, at);
+  gain.gain.exponentialRampToValueAtTime(.0005, at + length);
+  src.connect(filter).connect(gain).connect(dest);
+  src.start(at, Math.random()); src.stop(at + length + .01);
+}
+function tone(at, from, to, length, level, type, dest = master) {
+  const gain = audio.createGain(), osc = audio.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(from, at);
+  osc.frequency.exponentialRampToValueAtTime(to, at + length);
+  gain.gain.setValueAtTime(level, at);
+  gain.gain.exponentialRampToValueAtTime(.0005, at + length);
+  osc.connect(gain).connect(dest);
+  osc.start(at); osc.stop(at + length + .01);
+}
+// a small batucada scheduled a little ahead of time; it speeds up with the rally
+const TAMBORIM = [0, 3, 6, 8, 11, 14], AGOGO_HI = [0, 6, 10], AGOGO_LO = [2, 4, 12, 14];
+function samba() {
+  if (!audio || document.hidden) return;
+  const now = audio.currentTime, live = G.phase === 'rally' || G.phase === 'serve';
+  layers.forEach((g, k) => g.gain.setTargetAtTime(live && G.combo >= k + 2 ? 1 : 0, now, .35));
+  if (samba.next < now - .2) samba.next = now + .05;
+  const step = 60 / lerp(96, 120, pace()) / 4;
+  while (samba.next < now + .12) {
+    const at = samba.next, k = samba.step = ((samba.step || 0) + 1) % 16;
+    if (k === 0) tone(at, 90, 60, .22, .22, 'sine', layers[0]);
+    if (k === 8) tone(at, 66, 44, .42, .5, 'sine', layers[0]);
+    if (TAMBORIM.includes(k)) { tone(at, 1950, 1700, .03, .05, 'square', layers[1]); burst(at, .02, .05, 4200, 'bandpass', layers[1]); }
+    if (AGOGO_HI.includes(k)) { tone(at, 920, 920, .14, .045, 'triangle', layers[2]); tone(at, 1380, 1380, .08, .02, 'sine', layers[2]); }
+    if (AGOGO_LO.includes(k)) { tone(at, 690, 690, .14, .045, 'triangle', layers[2]); tone(at, 1035, 1035, .08, .02, 'sine', layers[2]); }
+    burst(at, .035, k % 4 ? .025 : .055, 7000, 'highpass', layers[3]);
+    samba.next += step;
+  }
+}
+function sound(kind, amount = .6) {
+  if (!audio) return;
+  const now = audio.currentTime;
+  if (kind === 'hit') { burst(now, .025, .14, 3400); tone(now, 1050, 460, .05, .12 + amount * .1, 'square'); }
+  else if (kind === 'smash') { burst(now, .04, .22, 2600); tone(now, 820, 240, .09, .3, 'square'); }
+  else if (kind === 'ping') tone(now + .03, 1180 + amount * 120, 1180 + amount * 120, .09, .05, 'triangle');
+  else if (kind === 'whiff') burst(now, .09, .05, 900);
+  else if (kind === 'arm') { tone(now, 660, 990, .07, .05, 'triangle'); tone(now + .07, 990, 990, .06, .04, 'triangle'); }
+  else if (kind === 'thud') { burst(now, .08, .18, 400, 'lowpass'); tone(now, 140, 60, .12, .2, 'sine'); }
+  else if (kind === 'splash') { burst(now, .25, .12, 1800); burst(now + .04, .2, .08, 900); }
+  else if (kind === 'drop') { tone(now + .05, 520, 330, .14, .06, 'triangle'); tone(now + .2, 390, 250, .2, .06, 'triangle'); }
+  else if (kind === 'bark') { for (const d of [0, .16]) { tone(now + d, 520, 330, .07, .09, 'square'); burst(now + d, .06, .06, 900); } }
+  else if (kind === 'whoosh') { burst(now, .5, .07, 500, 'lowpass'); burst(now + .2, .6, .05, 900); }
+  else if (kind === 'cheer') { for (let k = 0; k < 14; k++) burst(now + k * .07 + Math.random() * .05, .06, (.04 + Math.random() * .04) * amount, 1400 + Math.random() * 1400); }
+}
+const muteButton = document.getElementById('mute');
+muteButton.addEventListener('click', () => {
+  muted = !muted;
+  if (master) master.gain.value = muted ? 0 : 1;
+  muteButton.textContent = muted ? 'sound off' : 'sound on';
+  muteButton.setAttribute('aria-pressed', String(muted));
+});
+
+/* ---------- boot ---------- */
+addEventListener('resize', fit);
+fit();
+bake();
+newWind();
+G.windNow = { ...G.windBase };
+renderHud();
+setStatus('tap to start');
+let last = performance.now();
+function frame(now) {
+  update(Math.min(.04, (now - last) / 1000));
+  last = now;
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__frescobol = { G, press, release, contactError, step(dt, skipDraw) { update(dt); if (!skipDraw) draw(); } };
+</script>
+</body>
+</html>
